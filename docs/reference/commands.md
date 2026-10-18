@@ -189,7 +189,7 @@ session_key: generation 2
 tegata settle [--yes] <resource>...
 ```
 
-Copies the current value to `previous`, so the old value is no longer accepted. This ends a rotation. Fails with `<resource> has no previous` when the resource has no `previous`.
+Copies the current value to `previous`, so the old value is no longer accepted. This ends a rotation of a value your application checks ([When a secret needs `previous`](../concepts/previous-and-settle.md)). Fails with `<resource> has no previous` when the resource has no `previous`.
 
 ```text
 $ tegata settle session_key

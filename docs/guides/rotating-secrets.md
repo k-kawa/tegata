@@ -1,6 +1,6 @@
 # Rotating secrets
 
-How to replace a secret with a new value without breaking the services that use it. The steps depend on whether the old and the new value can work at the same time.
+How to replace a secret with a new value without breaking the services that use it. The steps depend on whether the old and the new value can work at the same time. Why some values need `previous` and `settle` and others do not, with an example: [When a secret needs `previous`](../concepts/previous-and-settle.md).
 
 | The value | Examples | Steps |
 | --- | --- | --- |

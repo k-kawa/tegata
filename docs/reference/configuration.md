@@ -168,7 +168,7 @@ The resource's name (`session_key`) may use lowercase letters, digits, `-`, and 
 | `type` | The provider's resource type (`api_token`, ...). Leave it out for the built-in providers |
 | `config` | Settings for this resource, passed to the provider as `config` |
 | `stores.<store>` | The secrets in that store: a list of entries, at least one (see below) |
-| `previous` | Optional. `{ name: <secret> }`: a secret in the same store that keeps the value before the last rotation, so services can accept both the old and the new value for a while (see [Rotating secrets](../guides/rotating-secrets.md#keys-your-service-checks-rotate-settle-prune)). It holds the value of the resource's first secret by name order, and is read by the same readers |
+| `previous` | Optional. `{ name: <secret> }`: a secret in the same store that keeps the value before the last rotation, so services can accept both the old and the new value for a while (see [Rotating secrets](../guides/rotating-secrets.md#keys-your-service-checks-rotate-settle-prune)). It holds the value of the resource's first secret by name order, and is read by the same readers. When a resource needs it: [When a secret needs `previous`](../concepts/previous-and-settle.md) |
 
 Each entry under `stores.<store>`:
 
