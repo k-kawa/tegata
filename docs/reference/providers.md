@@ -23,7 +23,7 @@ For each type:
 providers:
   cloudflare:
     source: github.com/k-kawa/tegata
-    version: "^0.1"
+    version: "^0.2"
     config:
       account_id: 0123456789abcdef0123456789abcdef
     credentials:
@@ -101,7 +101,7 @@ A tunnel has only one secret. After a rotation, `cloudflared` instances that are
 providers:
   tailscale:
     source: github.com/k-kawa/tegata
-    version: "^0.1"
+    version: "^0.2"
     credentials:
       client_id: { env: TEGATA_TAILSCALE_CLIENT_ID }
       client_secret: { env: TEGATA_TAILSCALE_CLIENT_SECRET }
@@ -149,7 +149,7 @@ resources:
 providers:
   aws:
     source: github.com/k-kawa/tegata
-    version: "^0.1"
+    version: "^0.2"
 ```
 
 The provider finds AWS credentials the way the AWS SDKs and CLI do: environment variables, `~/.aws/credentials` and `~/.aws/config`, an `aws sso login` session, and so on. The `aws` CLI itself is not needed. No `credentials` entry is used.
@@ -189,7 +189,7 @@ resources:
 providers:
   gcp:
     source: github.com/k-kawa/tegata
-    version: "^0.1"
+    version: "^0.2"
     config: { project: my-project }
 ```
 
@@ -233,7 +233,7 @@ A user has only one password: open connections stay, new connections with the ol
 providers:
   terraform:
     source: github.com/k-kawa/tegata
-    version: "^0.1"
+    version: "^0.2"
 ```
 
 ### `outputs` (data)
