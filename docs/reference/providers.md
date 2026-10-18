@@ -8,6 +8,15 @@ For each type:
 - **Outputs** are the names you map secrets to in `secrets`.
 - **Replaced at once** means that making a new value stops the previous one from working, so tegata asks before doing it (see [configuration](configuration.md#generations-and-rotation)).
 
+| Provider | Type | Kind | Replaced at once | What it makes | What `prune` does |
+| --- | --- | --- | --- | --- | --- |
+| [`cloudflare`](#cloudflare) | `api_token` | managed | no | An account API token (also R2 S3 keys) | Deletes the older tokens |
+| [`cloudflare`](#cloudflare) | `tunnel_token` | managed | yes | A new secret for an existing tunnel | Deletes nothing; refuses while connectors started before the rotation are connected |
+| [`tailscale`](#tailscale) | `auth_key` | managed | no | An auth key for the tailnet | Deletes the older keys |
+| [`aws`](#aws) | `ses_smtp_credentials` | managed | no | An IAM access key and the SES SMTP password derived from it | Deletes the older access keys |
+| [`gcp`](#gcp) | `sql_user` | managed | yes | A Cloud SQL built-in user's password | Deletes nothing |
+| [`terraform`](#terraform) | `outputs` | data | | Values read from a Terraform output | |
+
 ## cloudflare
 
 ```yaml

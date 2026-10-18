@@ -95,7 +95,7 @@ tegata prune session_key     # disable the old versions
 | `tegata init [--upgrade]` | Installs the providers that have a `source`, and writes `tegata.lock`. See [Installing providers](#installing-providers) |
 | `tegata check` | Checks the configuration, the providers, and that every `__NAME__` in the templates is made by some resource |
 | `tegata status` | Shows each resource and secret: generations, enabled versions, which roles read it. Also lists tegata secrets that are no longer in the YAML |
-| `tegata apply [--yes \| --dry-run]` | Creates secret containers, labels and read access; creates values that do not exist yet; re-reads `data` resources; writes [destinations](docs/configuration.md#destinations) |
+| `tegata apply [--yes \| --dry-run]` | Creates secret containers, labels and read access; creates values that do not exist yet; re-reads `data` resources; writes [destinations](docs/reference/configuration.md#destinations) |
 | `tegata rotate [--yes \| --dry-run] <resource>...` | Creates a new generation (copying the current value to `previous` first, if set) |
 | `tegata settle <resource>...` | Makes `previous` equal to the current value (the end of a rotation) |
 | `tegata prune [<resource>...]` | Deletes what providers created for older generations and disables those versions. Versions are disabled, not destroyed |
@@ -103,7 +103,7 @@ tegata prune session_key     # disable the old versions
 | `tegata import <role> <dir>` | Fills secrets that have no value from files you filled in by hand before using tegata |
 | `tegata render [--project <p>] <templates> <out>` | Fills `__NAME__` (and `__NAME\|sha256__`, the SHA-256 of the value) in each template file. Names that are missing or unreadable stay as they are and are listed |
 
-The configuration file is `tegata.yaml`, or `-f <file>` / `TEGATA_FILE`. Every key is described in the [configuration reference](docs/configuration.md).
+The configuration file is `tegata.yaml`, or `-f <file>` / `TEGATA_FILE`. Every key is described in the [configuration reference](docs/reference/configuration.md), and every command in the [command reference](docs/reference/commands.md).
 
 **Values that stop working at once.** Some things can hold only one value: a database user's password, a Cloudflare Tunnel's secret. Creating a new one breaks new connections until the servers are updated. Providers declare these types, and tegata asks before creating them (`--yes` to skip, `--dry-run` to only show).
 
@@ -120,7 +120,7 @@ The configuration file is `tegata.yaml`, or `-f <file>` / `TEGATA_FILE`. Every k
 | `tegata-provider-gcp` | `sql_user` | Cloud SQL built-in user passwords |
 | `tegata-provider-terraform` | `outputs` (data) | Values read from Terraform outputs |
 
-Settings, outputs, and rotation behavior of each: [providers](docs/providers.md). Writing a provider: [the provider protocol](docs/provider-protocol.md).
+Settings, outputs, and rotation behavior of each: [providers](docs/reference/providers.md). Writing a provider: [the provider protocol](docs/reference/provider-protocol.md).
 
 ### Installing providers
 
@@ -158,7 +158,7 @@ Commit `tegata.lock`. Other machines that run `tegata init` then get the same fi
 | `TEGATA_GITHUB_API` | The GitHub API URL (default `https://api.github.com`) |
 | `TEGATA_GITHUB_DOWNLOAD` | The base of the public download URLs (default `https://github.com`) |
 
-Publishing your own provider: see [releasing](docs/releasing.md).
+Publishing your own provider: see [publishing providers](docs/guides/publishing-providers.md).
 
 ## Install
 
@@ -179,10 +179,10 @@ Or build from source (Rust 1.87 or later): `cargo install --path crates/tegata`,
 
 ## Documentation
 
-- [Configuration reference](docs/configuration.md): every key of `tegata.yaml`, templates, generations and rotation, environment variables
-- [Providers](docs/providers.md): the providers in this repository
-- [Provider protocol](docs/provider-protocol.md): writing your own provider
-- [Releasing providers](docs/releasing.md): publishing providers for `tegata init`
+All of it, by kind: [docs](docs/README.md).
+
+- Guides: [Getting started](docs/guides/getting-started.md), [Rotating secrets](docs/guides/rotating-secrets.md), [Publishing providers](docs/guides/publishing-providers.md)
+- Reference: [Commands](docs/reference/commands.md), [Configuration](docs/reference/configuration.md) (every key of `tegata.yaml`, templates, environment variables), [Providers](docs/reference/providers.md), [Provider protocol](docs/reference/provider-protocol.md)
 - [Security policy](SECURITY.md): reporting vulnerabilities, the release signing key
 
 ## License
