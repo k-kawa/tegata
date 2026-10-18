@@ -102,10 +102,40 @@ Each credential:
 | Key | Description |
 | --- | --- |
 | `env` | The environment variable to read it from |
+| `from` | A [credential source](#credential_sources) to read it from: `{ source, secret, version }` for a `gcp` source (`version` defaults to the latest enabled one), `{ source, ref }` for a `command` source |
 | `prompt` | The question when tegata asks for it (default: `<provider> <name>`) |
-| `optional` | If `true` and the variable is not set, tegata leaves the credential out instead of asking, and the provider decides what to do (for example, use a CLI login). Default `false` |
+| `optional` | If `true` and neither the variable nor `from` gives a value, tegata leaves the credential out instead of asking, and the provider decides what to do (for example, use a CLI login). Default `false` |
 
-If the variable is not set (or is empty) and the credential is not optional, tegata asks for it on the terminal with hidden input, once per run. Outside a terminal, that is an error. Credentials are never written anywhere.
+tegata looks in this order, once per run: the variable `env` (when set and not empty), then `from`, then a hidden prompt on the terminal (an error outside one), unless the credential is `optional`. So `env` can override `from` for a one-off. Credentials are kept in memory only, and never written, logged, or shown in errors.
+
+## `credential_sources`
+
+Where providers' admin credentials come from: the tokens that let a provider make other tokens. They are kept apart from [`stores`](#stores), because whoever administers the store's project can grant themselves access to anything in it.
+
+```yaml
+credential_sources:
+  admin:
+    gcp: { project: myorg-admin }        # Secret Manager in another project
+  op:
+    command: [op, read]                  # any command; the reference is added as its last argument
+
+providers:
+  cloudflare:
+    credentials:
+      api_token:
+        from: { source: admin, secret: cloudflare-admin-token }
+        env: TEGATA_CLOUDFLARE_TOKEN     # wins when set
+  tailscale:
+    credentials:
+      client_secret: { from: { source: op, ref: "op://infra/tailscale/oauth-secret" } }
+```
+
+| Kind | Reads |
+| --- | --- |
+| `gcp: { project }` | Secret Manager in that project, with the same Google credentials as the store (`TEGATA_GCP_ACCESS_TOKEN`, the VM's service account, or `gcloud`). The account needs `roles/secretmanager.secretAccessor` on the secrets it reads there, and nothing else |
+| `command: [program, args...]` | Runs the program, without a shell, with the credential's `ref` as its last argument, and takes its standard output (one trailing newline removed). It gets the terminal, so tools that ask to be unlocked (1Password) work, and must finish within 60 seconds. A failure reports the exit status, never the output. A program with a `/` is relative to this file. For example: 1Password (`[op, read]`), Vault (`[vault, kv, get, -field=token]`), AWS Secrets Manager (`[aws, secretsmanager, get-secret-value, --query, SecretString, --output, text, --secret-id]`), `[pass, show]` |
+
+Each source sets exactly one kind. How to keep admin credentials and run tegata in CI without long-lived keys: [Admin credentials and CI](../guides/admin-credentials.md).
 
 ## `resources`
 
@@ -205,7 +235,8 @@ Choose the environment with `-e <name>` (or `TEGATA_ENV`). When the configuratio
 | --- | --- |
 | `stores.<store>` | The store, or part of it (here, the project) |
 | `identities.<identity>` | The members. The identity must be declared in the shared part; declare it with `[]` when every environment gives its members |
-| `providers.<provider>.config`, `.credentials` | Provider settings and credentials (for example, another environment variable for production's admin token). The provider must be in the shared part |
+| `providers.<provider>.config`, `.credentials` | Provider settings and credentials (for example, another secret or variable for production's admin token). The provider must be in the shared part |
+| `credential_sources` | Where admin credentials come from (for example, another project for production) |
 | `resources.<resource>.config` | Resource settings. The resource must be in the shared part: environments cannot add or remove resources |
 | `destinations` | Destinations, merged by name |
 | `confirm` | `true`: commands that change the store ask first (below). Only in an environment |

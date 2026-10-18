@@ -1,6 +1,7 @@
 //! tegata：秘密を作り、置き、雛形を埋める道具
 
 pub mod config;
+pub mod credentials;
 pub mod deliver;
 pub mod engine;
 pub mod install;

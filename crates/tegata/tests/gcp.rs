@@ -215,6 +215,52 @@ async fn talks_to_secret_manager() {
     store.set_readers("A", &Default::default()).await.unwrap();
     assert!(store.readers("A").await.unwrap().is_empty());
 
+    // 管理用の鍵の取り出し元：別のプロジェクトの Secret Manager（ここでは同じ偽物）
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("tegata.yaml");
+    std::fs::write(
+        &path,
+        r#"
+stores: { main: { local: { dir: s } } }
+credential_sources:
+  admin: { gcp: { project: proj } }
+providers:
+  p:
+    command: x
+    credentials:
+      latest: { from: { source: admin, secret: A } }
+      pinned: { from: { source: admin, secret: A, version: 1 } }
+resources: {}
+"#,
+    )
+    .unwrap();
+    let loaded = tegata::config::Loaded::load(&path).unwrap();
+    let got = tegata::credentials::resolve(&loaded, "p").await.unwrap();
+    assert_eq!(
+        got["latest"], "v1 with ünïcode",
+        "the latest enabled version"
+    );
+    assert_eq!(got["pinned"], "v1 with ünïcode");
+    std::fs::write(
+        &path,
+        std::fs::read_to_string(&path)
+            .unwrap()
+            .replace("secret: A, version: 1", "secret: MISSING"),
+    )
+    .unwrap();
+    let loaded = tegata::config::Loaded::load(&path).unwrap();
+    let e = format!(
+        "{:#}",
+        tegata::credentials::resolve(&loaded, "p")
+            .await
+            .unwrap_err()
+    );
+    assert!(e.contains("credential pinned of provider p"), "{e}");
+    assert!(
+        e.contains("cannot read secret MISSING in project proj"),
+        "{e}"
+    );
+
     // VM の形：プロジェクトと鍵をメタデータのサーバーから取って、雛形を埋める
     std::env::remove_var("TEGATA_GCP_ACCESS_TOKEN");
     std::env::set_var("TEGATA_GCP_METADATA", format!("http://{addr}"));
