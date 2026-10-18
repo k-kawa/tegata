@@ -8,6 +8,7 @@ identities: { ... } # who reads secrets (optional)
 providers: { ... }  # external providers (optional; random, manual and value are built in)
 resources: { ... }  # what to create, where to store it, and who reads it (required)
 destinations: { ... } # where copies of secrets are written, such as GitHub Actions secrets (optional)
+environments: { ... } # staging, production, ...: what differs between them (optional)
 ```
 
 A complete example that runs without a cloud account is in [examples/minimal](../../examples/minimal). Files written for tegata 0.1 use an older form; see [The old form](#the-old-form-and-tegata-migrate).
@@ -159,6 +160,72 @@ Secret names may use letters, digits, `-`, and `_`, up to 255 characters. To use
 | `manual` | none | A value you put with `tegata set <resource>`. `apply` creates the secret but not the value |
 | `value` | A map of output name → string | The strings themselves. For non-secret values that templates need next to secrets (a sender address, a bucket name). Read again on every `apply` |
 
+## `environments`
+
+Environments (staging, production, ...) share one configuration and differ only where they must: the store, the members of each identity, provider settings and credentials, resource settings, and destinations. Who reads what (`readers`) is the same in every environment.
+
+Each environment's overrides are written in a file of their own, or inline; both can be mixed.
+
+```yaml
+# tegata.yaml: what every environment shares
+stores:
+  main:
+    gcp: { location: asia-northeast1 }   # the project comes from the environment
+identities:
+  app: []                                # the members come from the environment
+environments:
+  staging: envs/staging.yaml             # a file, relative to this one
+  production:                            # or inline
+    confirm: true
+    stores: { main: { gcp: { project: myapp-prod } } }
+    identities: { app: [serviceAccount:app@myapp-prod.iam.gserviceaccount.com] }
+    resources: { db_password: { config: { instance: prod-main } } }
+resources:
+  db_password:
+    provider: gcp
+    type: sql_user
+    config: { user: app }                # the instance comes from the environment
+    stores:
+      main:
+        - { output: password, name: DATABASE_PASSWORD, readers: [app] }
+```
+
+```yaml
+# envs/staging.yaml: only what differs in staging
+stores: { main: { gcp: { project: myapp-staging } } }
+identities: { app: [serviceAccount:app@myapp-staging.iam.gserviceaccount.com] }
+resources: { db_password: { config: { instance: staging-main } } }
+```
+
+Choose the environment with `-e <name>` (or `TEGATA_ENV`). When the configuration has environments, every command but `render`, `init`, `check` and `env` needs one; there is no default. `tegata env <name>` prints an environment's configuration with its overrides merged in.
+
+**What an environment can set.** Its overrides are merged over the shared part: maps key by key, while lists and other values are replaced.
+
+| Key | Description |
+| --- | --- |
+| `stores.<store>` | The store, or part of it (here, the project) |
+| `identities.<identity>` | The members. The identity must be declared in the shared part; declare it with `[]` when every environment gives its members |
+| `providers.<provider>.config`, `.credentials` | Provider settings and credentials (for example, another environment variable for production's admin token). The provider must be in the shared part |
+| `resources.<resource>.config` | Resource settings. The resource must be in the shared part: environments cannot add or remove resources |
+| `destinations` | Destinations, merged by name |
+| `confirm` | `true`: commands that change the store ask first (below). Only in an environment |
+
+Anything else is an error that names the environment's file. After merging, the environment must be complete: a store, and at least one member in every identity.
+
+**Paths** in an environment's file, such as a Terraform `dir`, are relative to the main configuration file, like every other path in it.
+
+**`confirm: true`** makes `apply`, `rotate`, `settle`, `prune`, `set` and `import` say what they will do in that environment and ask for the environment's name before changing anything. `--yes` skips the question, for scripts and CI. Outside a terminal, without `--yes`, they refuse; `set` with the value on standard input therefore needs `--yes`. `--dry-run` and read-only commands never ask.
+
+```text
+$ tegata -e production rotate session_key
+production: make a new generation of session_key
+Type the environment name to continue: production
+```
+
+**Keeping environments apart.** Secrets get the label `tegata-env=<name>`, and a command refuses to touch a secret labeled with another environment. `tegata check` without `-e` checks every environment, and reports two environments that use the same Google Cloud project or give access to the same IAM member. `tegata.lock` is shared: every environment uses the same providers.
+
+Environments go with the current form (`stores`, `identities`); a file in the [old form](#the-old-form-and-tegata-migrate) is migrated first.
+
 ## `destinations`
 
 A destination receives copies of secrets: tegata writes the latest value there whenever it changes. Today the only kind is **GitHub Actions secrets**, of a repository or of one of its environments.
@@ -265,6 +332,7 @@ Written by `tegata init` next to the YAML file, and meant to be committed. For e
 | Variable | Use |
 | --- | --- |
 | `TEGATA_FILE` | The configuration file (instead of `-f`) |
+| `TEGATA_ENV` | The environment (instead of `-e`) |
 | `TEGATA_GCP_ACCESS_TOKEN` | An OAuth access token for Secret Manager (and for the `gcp` provider) |
 | `TEGATA_CACHE_DIR` | Where `tegata init` installs providers (default `$XDG_CACHE_HOME/tegata`, or `~/.cache/tegata`) |
 | `TEGATA_PROVIDER_MIRROR` | Install providers from a local directory, laid out as `<dir>/<source>/<version>/<file>` |

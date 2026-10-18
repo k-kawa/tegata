@@ -59,6 +59,9 @@ struct Cli {
         env = "TEGATA_FILE"
     )]
     file: PathBuf,
+    /// The environment, when the configuration has `environments`
+    #[arg(short = 'e', long = "env", global = true, env = "TEGATA_ENV")]
+    environment: Option<String>,
     #[command(subcommand)]
     command: Command,
 }
@@ -100,16 +103,26 @@ enum Command {
     },
     /// Put a value by hand (asked with hidden input on a terminal, otherwise read from stdin)
     #[command(after_help = command_help!("set"))]
-    Set { resource: String },
+    Set {
+        resource: String,
+        #[command(flatten)]
+        yes: YesArg,
+    },
     /// Make `previous` equal to the current value (the end of a rotation)
     #[command(after_help = command_help!("settle"))]
     Settle {
         #[arg(required = true)]
         resources: Vec<String>,
+        #[command(flatten)]
+        yes: YesArg,
     },
     /// Clean up generations older than the latest: delete what providers created and disable the versions. All resources if none are given
     #[command(after_help = command_help!("prune"))]
-    Prune { resources: Vec<String> },
+    Prune {
+        resources: Vec<String>,
+        #[command(flatten)]
+        yes: YesArg,
+    },
     /// Fill secrets that have no value from files filled in by hand (for moving to tegata)
     #[command(after_help = command_help!("import"))]
     Import {
@@ -117,6 +130,14 @@ enum Command {
         templates: PathBuf,
         /// Files with the same names as the templates, filled in by hand
         dir: PathBuf,
+        #[command(flatten)]
+        yes: YesArg,
+    },
+    /// Print the configuration of one environment: the shared part with its overrides merged in
+    #[command(after_help = command_help!("env"))]
+    Env {
+        /// An environment under `environments`
+        name: String,
     },
     /// Print the configuration in the current form (for files in the old form: store, roles, secrets)
     #[command(after_help = command_help!("migrate"))]
@@ -135,10 +156,28 @@ enum Command {
     },
 }
 
+/// For commands that change the store but make no new generation
+#[derive(clap::Args)]
+struct YesArg {
+    /// Do not ask, even in an environment with `confirm: true`
+    #[arg(long)]
+    yes: bool,
+}
+
+impl YesArg {
+    fn approval(&self) -> Approval {
+        if self.yes {
+            Approval::Yes
+        } else {
+            Approval::Ask
+        }
+    }
+}
+
 /// Confirmation before creating new generations
 #[derive(clap::Args)]
 struct ApprovalArgs {
-    /// Create without asking, even when the previous value stops working at once
+    /// Do not ask: neither in an environment with `confirm: true`, nor when the previous value stops working at once
     #[arg(long, conflicts_with = "dry_run")]
     yes: bool,
     /// Only show what would get a new generation; change nothing
@@ -172,6 +211,7 @@ impl Command {
             Command::Prune { .. } => command_docs!("prune"),
             Command::Import { .. } => command_docs!("import"),
             Command::Migrate => command_docs!("migrate"),
+            Command::Env { .. } => command_docs!("env"),
             Command::Render { .. } => command_docs!("render"),
         }
     }
@@ -219,9 +259,58 @@ async fn run(cli: Cli) -> Result<(), Failed> {
         }
         return Ok(());
     }
-    let loaded = Loaded::load(&cli.file).map_err(|error| Failed {
+    let config_failed = |error| Failed {
+        error,
+        docs: Some(docs!("reference/configuration.md#environments")),
+    };
+    if let Command::Env { name } = &cli.command {
+        print!(
+            "{}",
+            tegata::config::merged_yaml(&cli.file, name).map_err(config_failed)?
+        );
+        return Ok(());
+    }
+    let names = tegata::config::environment_names(&cli.file).map_err(|error| Failed {
         error,
         docs: Some(docs!("reference/configuration.md")),
+    })?;
+    if let Command::Migrate = &cli.command {
+        if !names.is_empty() {
+            return Err(anyhow::anyhow!(
+                "{} has environments, so it is in the current form already",
+                cli.file.display()
+            )
+            .into());
+        }
+    }
+    let env = match (&cli.command, cli.environment.as_deref()) {
+        // Without -e, check looks at every environment, and they are compared with each other
+        (
+            Command::Check {
+                identity,
+                templates,
+            },
+            None,
+        ) if !names.is_empty() => {
+            return check_environments(
+                &cli.file,
+                &names,
+                identity.as_deref(),
+                templates.as_deref(),
+            )
+            .await;
+        }
+        // Providers are the same in every environment
+        (Command::Init { .. }, None) => names.first().map(String::as_str),
+        (_, env) => env,
+    };
+    let loaded = Loaded::load_env(&cli.file, env).map_err(|error| Failed {
+        error,
+        docs: Some(if names.is_empty() {
+            docs!("reference/configuration.md")
+        } else {
+            docs!("reference/configuration.md#environments")
+        }),
     })?;
     if let Command::Migrate = &cli.command {
         let (yaml, checks) = loaded.migrate()?;
@@ -266,15 +355,9 @@ async fn run(cli: Cli) -> Result<(), Failed> {
             templates,
         } => {
             let pair = identity.as_deref().zip(templates.as_deref());
-            let checked = engine.check(pair).await?;
-            for w in &checked.warnings {
-                println!("warning: {w}");
-            }
-            for p in &checked.problems {
-                println!("{p}");
-            }
-            if !checked.problems.is_empty() {
-                return Err(anyhow::anyhow!("{} problems", checked.problems.len()).into());
+            let problems = report(&engine.check(pair).await?, "");
+            if problems > 0 {
+                return Err(anyhow::anyhow!("{problems} problems").into());
             }
             println!("ok");
         }
@@ -289,13 +372,82 @@ async fn run(cli: Cli) -> Result<(), Failed> {
                 .rotate(&resources)
                 .await?
         }
-        Command::Set { resource } => engine.set(&resource).await?,
-        Command::Settle { resources } => engine.settle(&resources).await?,
-        Command::Prune { resources } => engine.prune(&resources).await?,
-        Command::Import { templates, dir } => engine.import(&templates, &dir).await?,
-        Command::Render { .. } | Command::Init { .. } | Command::Migrate => {
+        Command::Set { resource, yes } => {
+            engine.with_approval(yes.approval()).set(&resource).await?
+        }
+        Command::Settle { resources, yes } => {
+            engine
+                .with_approval(yes.approval())
+                .settle(&resources)
+                .await?
+        }
+        Command::Prune { resources, yes } => {
+            engine
+                .with_approval(yes.approval())
+                .prune(&resources)
+                .await?
+        }
+        Command::Import {
+            templates,
+            dir,
+            yes,
+        } => {
+            engine
+                .with_approval(yes.approval())
+                .import(&templates, &dir)
+                .await?
+        }
+        Command::Render { .. } | Command::Init { .. } | Command::Migrate | Command::Env { .. } => {
             unreachable!("handled above")
         }
     }
+    Ok(())
+}
+
+/// Prints what check found (each line after `prefix`), and returns the number of problems
+fn report(checked: &tegata::engine::Checked, prefix: &str) -> usize {
+    for w in &checked.warnings {
+        println!("warning: {prefix}{w}");
+    }
+    for p in &checked.problems {
+        println!("{prefix}{p}");
+    }
+    checked.problems.len()
+}
+
+/// `tegata check` without -e: every environment, and environments that share a project or a member
+async fn check_environments(
+    file: &std::path::Path,
+    names: &[String],
+    identity: Option<&str>,
+    templates: Option<&std::path::Path>,
+) -> Result<(), Failed> {
+    let mut problems = 0;
+    let mut loaded = Vec::new();
+    for name in names {
+        match Loaded::load_env(file, Some(name)) {
+            Ok(l) => loaded.push(l),
+            Err(e) => {
+                println!("{name}: {e:#}");
+                problems += 1;
+            }
+        }
+    }
+    for l in &loaded {
+        let name = l.config.environment.as_deref().unwrap_or_default();
+        let store = tegata::open_store(l).await?;
+        let checked = Engine::new(l, store.as_ref())
+            .check(identity.zip(templates))
+            .await?;
+        problems += report(&checked, &format!("{name}: "));
+    }
+    for p in tegata::config::isolation_problems(&loaded) {
+        println!("{p}");
+        problems += 1;
+    }
+    if problems > 0 {
+        return Err(anyhow::anyhow!("{problems} problems").into());
+    }
+    println!("ok ({})", names.join(", "));
     Ok(())
 }

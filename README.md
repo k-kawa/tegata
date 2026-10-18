@@ -104,9 +104,10 @@ tegata prune session_key     # disable the old versions
 | `tegata set <resource>` | Puts a value by hand (hidden input on a terminal, otherwise stdin). For `manual` resources, or to restore a value |
 | `tegata import <templates> <dir>` | Fills secrets that have no value from files you filled in by hand before using tegata |
 | `tegata migrate` | Prints a configuration written for tegata 0.1 in the current form |
+| `tegata env <name>` | Prints one environment's configuration, with its overrides merged in |
 | `tegata render [--project <p>] <templates> <out>` | Fills `__NAME__` (and `__NAME\|sha256__`, the SHA-256 of the value) in each template file. Names that are missing or unreadable stay as they are and are listed |
 
-The configuration file is `tegata.yaml`, or `-f <file>` / `TEGATA_FILE`. Every key is described in the [configuration reference](docs/reference/configuration.md), and every command in the [command reference](docs/reference/commands.md).
+The configuration file is `tegata.yaml`, or `-f <file>` / `TEGATA_FILE`. Every key is described in the [configuration reference](docs/reference/configuration.md), and every command in the [command reference](docs/reference/commands.md). Staging and production can share one configuration, each with its own file of differences (`environments`, chosen with `-e`; [guide](docs/guides/staging-and-production.md)).
 
 **Values that stop working at once.** Some things can hold only one value: a database user's password, a Cloudflare Tunnel's secret. Creating a new one breaks new connections until the servers are updated. Providers declare these types, and tegata asks before creating them (`--yes` to skip, `--dry-run` to only show).
 
@@ -184,7 +185,7 @@ Or build from source (Rust 1.87 or later): `cargo install --path crates/tegata`,
 
 All of it, by kind: [docs](docs/README.md).
 
-- Guides: [Getting started](docs/guides/getting-started.md), [Rotating secrets](docs/guides/rotating-secrets.md), [Publishing providers](docs/guides/publishing-providers.md)
+- Guides: [Getting started](docs/guides/getting-started.md), [Rotating secrets](docs/guides/rotating-secrets.md), [Staging and production](docs/guides/staging-and-production.md), [Publishing providers](docs/guides/publishing-providers.md)
 - Reference: [Commands](docs/reference/commands.md), [Configuration](docs/reference/configuration.md) (every key of `tegata.yaml`, templates, environment variables), [Providers](docs/reference/providers.md), [Provider protocol](docs/reference/provider-protocol.md)
 - [Changelog](CHANGELOG.md): what changed in each version, and how to move between versions
 - [Security policy](SECURITY.md): reporting vulnerabilities, the release signing key
