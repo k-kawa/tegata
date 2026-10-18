@@ -26,8 +26,11 @@ if [ -z "$(printf '%s' "$section" | tr -d '[:space:]')" ]; then
 fi
 compare=$(grep -m1 -E "^\[$version\]: " "$changelog" | sed -E 's/^\[[^]]+\]: //' || true)
 
-# The section, without the blank lines around it
-printf '%s\n' "$section" | sed -e '/./,$!d' | awk '{ lines[NR] = $0 } END { n = NR; while (n > 0 && lines[n] == "") n--; for (i = 1; i <= n; i++) print lines[i] }'
+# The section, without the blank lines around it. Links relative to the repository (docs/...)
+# point at this version's files, since the notes are read on the releases page
+printf '%s\n' "$section" | sed -e '/./,$!d' |
+  awk '{ lines[NR] = $0 } END { n = NR; while (n > 0 && lines[n] == "") n--; for (i = 1; i <= n; i++) print lines[i] }' |
+  sed -E "s|\]\(([^):#][^):]*)\)|](https://github.com/$repo/blob/v$version/\1)|g"
 cat <<EOF
 
 ## Checking the files

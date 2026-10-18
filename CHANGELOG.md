@@ -4,6 +4,10 @@ All notable changes to tegata and the providers in this repository, which share 
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-19
+
+0.3.0 adds environments, credential sources, and a `render` for timers. Configurations written for 0.2 work unchanged.
+
 ### Added
 
 - **Environments** (#6): staging, production, and others share one configuration and differ only in the store, the members of each identity, provider settings and credentials, resource settings, and destinations. Each environment's overrides are in a file of their own (`environments: { production: envs/production.yaml }`) or inline. Choose one with `-e <name>` or `TEGATA_ENV`; `tegata env <name>` prints its merged configuration.
@@ -11,6 +15,10 @@ All notable changes to tegata and the providers in this repository, which share 
 - Secrets of an environment are labeled `tegata-env=<name>`, and tegata refuses to touch another environment's secrets. `tegata check` without `-e` checks every environment, and reports environments that share a Google Cloud project or an IAM member.
 - **`render` for timers** (#8): files whose content did not change are not written again. `--on-change <command>` runs once after writing when any file changed, with the names in `TEGATA_CHANGED`; `--exit-code` exits with 3 when something changed; `--fail-on-missing` writes nothing when a name is missing or unreadable. The guide [Running on servers](docs/guides/running-on-servers.md) has a systemd timer, and what it costs in Secret Manager reads.
 - **Credential sources** (#9): providers' admin credentials can come from `credential_sources`, apart from the store: Secret Manager in another project (`gcp`), or any command (`command`, for 1Password, Vault, AWS Secrets Manager and others). A credential names one with `from`; `env` still wins when set. Environments can point at other sources. The guide [Admin credentials and CI](docs/guides/admin-credentials.md) shows where to keep them and how to run tegata in CI without long-lived keys.
+
+### Moving from 0.2
+
+Nothing is required. The provider protocol has not changed, so providers locked at 0.2 keep working; to move them to 0.3, set `version: "^0.3"` and run `tegata init --upgrade`.
 
 ## [0.2.0] - 2026-10-19
 
@@ -59,7 +67,8 @@ The first release.
 - Destinations: copies of secrets in the GitHub Actions secrets of a repository or an environment.
 - Releases are built on GitHub-hosted runners with artifact attestations, and `SHA256SUMS` is signed by the maintainer.
 
-[Unreleased]: https://github.com/k-kawa/tegata/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/k-kawa/tegata/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/k-kawa/tegata/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/k-kawa/tegata/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/k-kawa/tegata/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/k-kawa/tegata/releases/tag/v0.1.0
