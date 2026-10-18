@@ -662,3 +662,142 @@ resources:
         "{out}"
     );
 }
+
+/// render writes only what changed, runs --on-change once when something did, can say so in its
+/// exit status, and with --fail-on-missing writes nothing when a name is missing
+#[test]
+fn render_writes_changes_and_runs_a_hook() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    std::fs::create_dir_all(dir.join("tpl")).unwrap();
+    std::fs::write(dir.join("tpl/a.env"), "A=__A__\n").unwrap();
+    std::fs::write(dir.join("tpl/b.env"), "B=__B__\n").unwrap();
+    std::fs::write(
+        dir.join("tegata.yaml"),
+        r#"
+stores: { main: { local: { dir: store } } }
+resources:
+  a: { provider: manual, stores: { main: [{ name: A }] } }
+  b: { provider: manual, stores: { main: [{ name: B }] } }
+"#,
+    )
+    .unwrap();
+    for (r, v) in [("a", "one"), ("b", "two")] {
+        let (ok, out) = tegata(dir, &["set", r], Some(v));
+        assert!(ok, "{out}");
+    }
+    let log = dir.join("hook.log");
+    let hook = format!("echo \"$TEGATA_CHANGED\" >> {}", log.display());
+    let render = |extra: &[&str]| {
+        let store = dir.join("store");
+        let tpl = dir.join("tpl");
+        let out = dir.join("out");
+        let mut args = vec![
+            "render",
+            "--store-dir",
+            store.to_str().unwrap(),
+            "--on-change",
+            &hook,
+        ];
+        args.extend_from_slice(extra);
+        args.push(tpl.to_str().unwrap());
+        args.push(out.to_str().unwrap());
+        let o = Command::new(env!("CARGO_BIN_EXE_tegata"))
+            .args(&args)
+            .output()
+            .unwrap();
+        (
+            o.status.code(),
+            format!(
+                "{}{}",
+                String::from_utf8_lossy(&o.stdout),
+                String::from_utf8_lossy(&o.stderr)
+            ),
+        )
+    };
+    let hook_runs = || {
+        std::fs::read_to_string(&log)
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_owned)
+            .collect::<Vec<_>>()
+    };
+
+    // first time: both files are new, and the hook runs once with both
+    let (code, out) = render(&["--exit-code"]);
+    assert_eq!(code, Some(3), "{out}");
+    assert!(out.contains("changed: a.env b.env"), "{out}");
+    assert_eq!(hook_runs(), vec!["a.env b.env"]);
+    let written = std::fs::metadata(dir.join("out/a.env"))
+        .unwrap()
+        .modified()
+        .unwrap();
+
+    // nothing changed: nothing written, no hook, exit 0
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    let (code, out) = render(&["--exit-code"]);
+    assert_eq!(code, Some(0), "{out}");
+    assert!(!out.contains("changed:"), "{out}");
+    assert_eq!(hook_runs().len(), 1);
+    let again = std::fs::metadata(dir.join("out/a.env"))
+        .unwrap()
+        .modified()
+        .unwrap();
+    assert_eq!(written, again, "an unchanged file is not rewritten");
+
+    // one value changes: only its file, and the hook gets its name
+    let (ok, out) = tegata(dir, &["set", "a"], Some("three"));
+    assert!(ok, "{out}");
+    let (code, out) = render(&[]);
+    assert_eq!(
+        code,
+        Some(0),
+        "without --exit-code, a change still exits 0: {out}"
+    );
+    assert_eq!(hook_runs(), vec!["a.env b.env", "a.env"]);
+    assert_eq!(
+        std::fs::read_to_string(dir.join("out/a.env")).unwrap(),
+        "A=three\n"
+    );
+
+    // a failing hook fails render (the files are written already)
+    let (ok, out) = tegata(dir, &["set", "b"], Some("four"));
+    assert!(ok, "{out}");
+    let o = Command::new(env!("CARGO_BIN_EXE_tegata"))
+        .args([
+            "render",
+            "--store-dir",
+            dir.join("store").to_str().unwrap(),
+            "--on-change",
+            "exit 4",
+            dir.join("tpl").to_str().unwrap(),
+            dir.join("out").to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    let out = String::from_utf8_lossy(&o.stderr);
+    assert_eq!(o.status.code(), Some(1), "{out}");
+    assert!(out.contains("the --on-change command failed"), "{out}");
+    assert_eq!(
+        std::fs::read_to_string(dir.join("out/b.env")).unwrap(),
+        "B=four\n"
+    );
+
+    // a missing name: with --fail-on-missing, nothing is written and the hook does not run
+    std::fs::write(dir.join("tpl/a.env"), "A=__A__\nC=__NOT_THERE__\n").unwrap();
+    let (code, out) = render(&["--fail-on-missing"]);
+    assert_eq!(code, Some(1), "{out}");
+    assert!(
+        out.contains("not in the store, or not readable: NOT_THERE"),
+        "{out}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.join("out/a.env")).unwrap(),
+        "A=three\n"
+    );
+    assert_eq!(hook_runs().len(), 2);
+    // without it, the name stays and is listed, as before
+    let (code, out) = render(&[]);
+    assert_eq!(code, Some(0), "{out}");
+    assert!(out.contains("not in the store: NOT_THERE"), "{out}");
+}

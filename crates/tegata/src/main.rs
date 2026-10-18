@@ -151,6 +151,16 @@ enum Command {
         /// Use a directory store instead of Secret Manager (for tests)
         #[arg(long)]
         store_dir: Option<PathBuf>,
+        /// Run this command (with `sh -c`) once after writing, when any file changed. The changed
+        /// files are in TEGATA_CHANGED, separated by spaces
+        #[arg(long, value_name = "COMMAND")]
+        on_change: Option<String>,
+        /// Exit with 3 when a file changed (0 when nothing did)
+        #[arg(long)]
+        exit_code: bool,
+        /// Write nothing and fail when a name is missing in the store or cannot be read
+        #[arg(long)]
+        fail_on_missing: bool,
         templates: PathBuf,
         out: PathBuf,
     },
@@ -244,18 +254,45 @@ async fn run(cli: Cli) -> Result<(), Failed> {
     if let Command::Render {
         project,
         store_dir,
+        on_change,
+        exit_code,
+        fail_on_missing,
         templates,
         out,
     } = &cli.command
     {
         let store = tegata::open_render_store(project.clone(), store_dir.as_deref()).await?;
-        let r = tegata::render::render_dir(store.as_ref(), templates, out).await?;
-        println!("filled {} files", r.files);
-        if !r.missing.is_empty() {
-            println!(
-                "  not in the store: {}",
-                r.missing.iter().cloned().collect::<Vec<_>>().join(" ")
-            );
+        let filled = tegata::render::fill_dir(store.as_ref(), templates).await?;
+        let missing = filled.missing.iter().cloned().collect::<Vec<_>>().join(" ");
+        if *fail_on_missing && !filled.missing.is_empty() {
+            return Err(anyhow::anyhow!(
+                "not in the store, or not readable: {missing}; nothing was written"
+            )
+            .into());
+        }
+        let changed = tegata::render::write_dir(&filled, out)?;
+        println!("filled {} files", filled.files.len());
+        if !changed.is_empty() {
+            println!("  changed: {}", changed.join(" "));
+        }
+        if !missing.is_empty() {
+            println!("  not in the store: {missing}");
+        }
+        if let (Some(hook), false) = (on_change, changed.is_empty()) {
+            let status = tokio::process::Command::new("sh")
+                .arg("-c")
+                .arg(hook)
+                .env("TEGATA_CHANGED", changed.join(" "))
+                .status()
+                .await
+                .map_err(|e| anyhow::anyhow!("cannot run the --on-change command: {e}"))?;
+            println!("ran: {hook} ({status})");
+            if !status.success() {
+                return Err(anyhow::anyhow!("the --on-change command failed ({status})").into());
+            }
+        }
+        if *exit_code && !changed.is_empty() {
+            std::process::exit(3);
         }
         return Ok(());
     }

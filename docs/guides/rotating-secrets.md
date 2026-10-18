@@ -9,7 +9,7 @@ How to replace a secret with a new value without breaking the services that use 
 | Only one value exists; a new one stops the old one at once | `gcp/sql_user`, `cloudflare/tunnel_token` | `rotate` (asks first) → render at once → `prune` |
 | Typed in by hand | `manual` | `set` → render → `prune` |
 
-"Render" means: run `tegata render` on every server that uses the secret and restart (or reload) the services that read the files. GitHub Actions secrets ([destinations](../reference/configuration.md#destinations)) need nothing: tegata writes the new value during `rotate`, `settle` and `set`, and workflows use it from their next run.
+"Render" means: run `tegata render` on every server that uses the secret and restart (or reload) the services that read the files. With `tegata render` on a timer and `--on-change`, the servers do this by themselves within a few minutes ([Running on servers](running-on-servers.md)). GitHub Actions secrets ([destinations](../reference/configuration.md#destinations)) need nothing: tegata writes the new value during `rotate`, `settle` and `set`, and workflows use it from their next run.
 
 `tegata status` shows where each resource is: `generation 2 (+1 to prune)` means a rotation has not been cleaned up yet.
 
