@@ -12,34 +12,41 @@ Copy [examples/minimal](../../examples/minimal) and work in it:
 cp -r examples/minimal /tmp/tegata-try && cd /tmp/tegata-try
 ```
 
-`tegata.yaml` declares where secrets live, who reads them, and what to make:
+`tegata.yaml` declares where secrets live, who reads them, and what to make. Each secret lists its `readers`; `previous` is read by the readers of the value it copies:
 
 ```yaml
-store:
-  local:
-    dir: ./store              # plain-text JSON files: for trying tegata only
+stores:
+  main:
+    local:
+      dir: ./store                    # plain-text JSON files: for trying tegata only
 
-roles:
+identities:
   app:
-    member: serviceAccount:app@example.iam.gserviceaccount.com
-    templates: ./templates/app
+    members: [serviceAccount:app@example.iam.gserviceaccount.com]
+    templates: ./templates/app        # check compares them with what app can read
 
 resources:
   session_key:
-    provider: random          # 32 random bytes
+    provider: random                  # 32 random bytes
     config: { bytes: 32 }
-    secrets: { SESSION_KEY: value }
-    previous: PREVIOUS_SESSION_KEY
+    stores:
+      main:
+        - { name: SESSION_KEY, readers: [app] }
+    previous: { name: PREVIOUS_SESSION_KEY }
   admin_password:
-    provider: manual          # you type it
-    secrets: { ADMIN_PASSWORD: value }
+    provider: manual                  # you type it
+    stores:
+      main:
+        - { name: ADMIN_PASSWORD, readers: [app] }
   mail:
-    provider: value           # a fixed, non-secret value
+    provider: value                   # a fixed, non-secret value
     config: { from: "Example <noreply@example.com>" }
-    secrets: { MAIL_FROM: from }
+    stores:
+      main:
+        - { output: from, name: MAIL_FROM, readers: [app] }
 ```
 
-`templates/app/app.env` is the file the `app` role fills in. A role can read exactly the secrets whose names appear in its templates:
+`templates/app/app.env` is the file a server running as `app` fills in. `tegata check` makes sure `app` can read every name in it:
 
 ```text
 SESSION_KEY=__SESSION_KEY__
@@ -69,7 +76,7 @@ session_key: generation 1
 PREVIOUS_SESSION_KEY: version 1 (the value of SESSION_KEY)
 ```
 
-`apply` made the random key, and gave the `app` role read access to the four secrets its template uses. The `manual` password waits for you:
+`apply` made the random key, and gave the members of `app` read access to the four secrets. The `manual` password waits for you:
 
 ```text
 $ echo 'correct horse' | tegata set admin_password
@@ -121,16 +128,17 @@ Between `rotate` and `settle`, a service that accepts both `SESSION_KEY` and `PR
 
 ## 5. Move to Secret Manager
 
-1. Replace the store, and set the role's member to the service account of the server that renders:
+1. Replace the store, and set the members of `app` to the service account of the server that renders:
 
     ```yaml
-    store:
-      gcp:
-        project: my-project
-        location: us-central1
-    roles:
+    stores:
+      main:
+        gcp:
+          project: my-project
+          location: us-central1
+    identities:
       app:
-        member: serviceAccount:app-vm@my-project.iam.gserviceaccount.com
+        members: [serviceAccount:app-vm@my-project.iam.gserviceaccount.com]
         templates: ./templates/app
     ```
 

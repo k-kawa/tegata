@@ -21,8 +21,10 @@ Give the resource a `previous` secret, and make the service accept a value that 
 resources:
   session_key:
     provider: random
-    secrets: { SESSION_KEY: value }
-    previous: PREVIOUS_SESSION_KEY
+    stores:
+      main:
+        - { name: SESSION_KEY, readers: [app] }
+    previous: { name: PREVIOUS_SESSION_KEY }   # read by the readers of SESSION_KEY
 ```
 
 ```text
@@ -80,6 +82,6 @@ If the resource has `previous`, `set` copies the current value there first, as `
 
 ## If something goes wrong
 
-- **A server cannot read the new value.** `render` leaves `__NAME__` in the file and lists the name. Check that the role's templates use the name and that `tegata apply` ran after you added it (`tegata status` shows the readers).
+- **A server cannot read the new value.** `render` leaves `__NAME__` in the file and lists the name. Check that the server's identity is in the secret's `readers` and that `tegata apply` ran after you added it (`tegata status` shows the readers; `tegata check` compares an identity's templates with what it can read).
 - **You pruned before a server had the new value.** The new value is already in the store: render and restart on that server. Old versions are disabled, not destroyed, so you can still enable one in Secret Manager to read it, but a token deleted on the provider cannot be brought back.
 - **The old value leaked.** Rotate, render, and prune at once, without waiting between the steps.

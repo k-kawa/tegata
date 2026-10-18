@@ -341,7 +341,8 @@ fn help_and_errors_link_to_the_docs() {
     );
     check_links(&out);
     for command in [
-        "init", "check", "status", "apply", "rotate", "set", "settle", "prune", "import", "render",
+        "init", "check", "status", "apply", "rotate", "set", "settle", "prune", "import",
+        "migrate", "render",
     ] {
         let (ok, out) = tegata(dir, &[command, "--help"], None);
         assert!(ok, "{out}");
@@ -370,4 +371,140 @@ fn help_and_errors_link_to_the_docs() {
     assert!(out.contains("error: k has no previous"), "{out}");
     assert!(out.contains("commands.md#tegata-settle"), "{out}");
     check_links(&out);
+}
+
+/// tegata migrate prints the current form, and apply after migrating changes nothing
+#[test]
+fn migrating_changes_nothing_in_the_store() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    std::fs::create_dir_all(dir.join("web")).unwrap();
+    std::fs::create_dir_all(dir.join("worker")).unwrap();
+    std::fs::write(
+        dir.join("web/app.env"),
+        "K=__KEY__\nP=__KEY_PREV__\nM=__MAIL__\n",
+    )
+    .unwrap();
+    std::fs::write(dir.join("worker/app.env"), "M=__MAIL__\n").unwrap();
+    std::fs::write(
+        dir.join("tegata.yaml"),
+        r#"
+store: { local: { dir: store } }
+roles:
+  web: { member: "serviceAccount:web@x", templates: web }
+  worker: { member: "serviceAccount:worker@x", templates: worker }
+resources:
+  key: { provider: random, secrets: { KEY: value }, previous: KEY_PREV }
+  mail: { provider: value, config: { from: "a@b" }, secrets: { MAIL: from } }
+  unused: { provider: manual, secrets: { UNUSED: value } }
+"#,
+    )
+    .unwrap();
+    let (ok, out) = tegata(dir, &["apply"], None);
+    assert!(ok, "{out}");
+    assert!(out.contains("uses the old form"), "{out}");
+    let (_, before) = tegata(dir, &["status"], None);
+
+    let (ok, migrated) = tegata(dir, &["migrate"], None);
+    assert!(ok, "{migrated}");
+    std::fs::write(dir.join("tegata.yaml"), &migrated).unwrap();
+    let (ok, out) = tegata(dir, &["apply"], None);
+    assert!(ok, "{out}");
+    assert!(
+        !out.contains("readers of") && !out.contains("created") && !out.contains("version"),
+        "apply after migrate changed something:\n{out}\n{migrated}"
+    );
+    assert!(!out.contains("old form"), "{out}");
+    let (_, after) = tegata(dir, &["status"], None);
+    let without_warnings = |s: &str| {
+        s.lines()
+            .filter(|l| !l.starts_with("warning:"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    assert_eq!(without_warnings(&after), without_warnings(&before));
+    let (ok, out) = tegata(dir, &["check"], None);
+    assert!(ok && out.ends_with("ok\n"), "{out}");
+}
+
+/// In the current form, readers decide access, and check compares them with the templates
+#[test]
+fn readers_decide_access_and_check_compares_templates() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    std::fs::create_dir_all(dir.join("edge")).unwrap();
+    std::fs::write(dir.join("edge/tunnel.env"), "T=__TUNNEL__\nK=__KEY__\n").unwrap();
+    std::fs::write(
+        dir.join("tegata.yaml"),
+        r#"
+stores:
+  main: { local: { dir: store } }
+identities:
+  app: [serviceAccount:app-1@x, serviceAccount:app-2@x]
+  edge: { members: [serviceAccount:edge@x], templates: edge }
+resources:
+  key:
+    provider: random
+    stores:
+      main:
+        - { name: KEY, readers: [app] }
+    previous: { name: KEY_PREV }
+  tunnel:
+    provider: manual
+    stores:
+      main:
+        - { name: TUNNEL, readers: [edge] }
+  mail:
+    provider: value
+    config: { from: "a@b" }
+    stores:
+      main:
+        - { output: from, name: MAIL, readers: [app, edge] }
+"#,
+    )
+    .unwrap();
+    // edge's template uses KEY, which only app reads; and edge reads MAIL, which it does not use
+    let (ok, out) = tegata(dir, &["check"], None);
+    assert!(!ok, "{out}");
+    assert!(
+        out.contains("identity edge: KEY is in the templates but edge cannot read it (add edge to its readers)"),
+        "{out}"
+    );
+    assert!(
+        out.contains("warning: identity edge: can read MAIL, which its templates do not use"),
+        "{out}"
+    );
+
+    let (ok, out) = tegata(dir, &["apply"], None);
+    assert!(ok, "{out}");
+    // every member of every reader, and previous read like the value it copies
+    assert!(
+        out.contains("readers of KEY: serviceAccount:app-1@x, serviceAccount:app-2@x"),
+        "{out}"
+    );
+    assert!(
+        out.contains("readers of KEY_PREV: serviceAccount:app-1@x, serviceAccount:app-2@x"),
+        "{out}"
+    );
+    assert!(
+        out.contains("readers of MAIL: serviceAccount:app-1@x, serviceAccount:app-2@x, serviceAccount:edge@x"),
+        "{out}"
+    );
+    let (ok, out) = tegata(dir, &["status"], None);
+    assert!(ok, "{out}");
+    assert!(
+        out.lines()
+            .any(|l| l.contains("MAIL") && l.trim_end().ends_with("app,edge")),
+        "{out}"
+    );
+    assert!(
+        out.lines()
+            .any(|l| l.contains("TUNNEL") && l.trim_end().ends_with("edge")),
+        "{out}"
+    );
+
+    // import matches against an identity's templates
+    let (ok, out) = tegata(dir, &["import", "app", dir.to_str().unwrap()], None);
+    assert!(!ok);
+    assert!(out.contains("identity app has no templates"), "{out}");
 }

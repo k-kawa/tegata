@@ -40,6 +40,15 @@ pub fn generations(meta: &SecretMeta) -> BTreeMap<u64, Generation> {
         .collect()
 }
 
+/// What `check` found
+#[derive(Debug, Default)]
+pub struct Checked {
+    /// Make `check` fail
+    pub problems: Vec<String>,
+    /// Worth a look, but not wrong (an identity can read more than its templates use)
+    pub warnings: Vec<String>,
+}
+
 /// 新しい世代を作る前の確かめ方
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Approval {
@@ -113,21 +122,30 @@ impl<'a> Engine<'a> {
         if replacing.is_empty() {
             return Ok(self.approval != Approval::DryRun);
         }
-        let roles = self.loaded.role_names()?;
+        let all_readers = self.loaded.readers()?;
         let mut notice = String::new();
         for (name, res) in &replacing {
             notice.push_str(&format!(
                 "{name} ({} {}: {})\n  the old value stops working at once; open connections stay, new ones with the old value fail\n",
                 res.provider, res.kind, res.config
             ));
-            let secrets = res.all_secrets();
-            let readers: Vec<String> = roles
+            let ids: BTreeSet<&String> = res
+                .all_secrets()
                 .iter()
-                .filter(|(_, n)| secrets.iter().any(|s| n.contains(s)))
-                .map(|(role, _)| format!("{role} ({})", self.loaded.config.roles[role].member))
+                .filter_map(|s| all_readers.get(s))
+                .flatten()
+                .collect();
+            let readers: Vec<String> = ids
+                .into_iter()
+                .map(|id| {
+                    format!(
+                        "{id} ({})",
+                        self.loaded.config.identities[id].members.join(", ")
+                    )
+                })
                 .collect();
             if readers.is_empty() {
-                notice.push_str("  no role reads it\n");
+                notice.push_str("  nobody reads it\n");
             } else {
                 notice.push_str(&format!(
                     "  read by: {}\n  update them right after this (run `tegata render` there and restart what uses the value)\n",
@@ -199,21 +217,25 @@ impl<'a> Engine<'a> {
         ])
     }
 
-    /// 秘密 → 読む相手（雛形にその名前を持つ役割のメンバー）
+    /// 秘密 → 読む相手（その秘密を読む identity のメンバー）
     fn desired_readers(&self) -> anyhow::Result<BTreeMap<String, BTreeSet<String>>> {
-        let mut readers: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-        for (role, names) in self.loaded.role_names()? {
-            let member = &self.loaded.config.roles[&role].member;
-            for n in names {
-                readers.entry(n).or_default().insert(member.clone());
-            }
-        }
-        Ok(readers)
+        Ok(self
+            .loaded
+            .readers()?
+            .into_iter()
+            .map(|(secret, ids)| {
+                let members = ids
+                    .iter()
+                    .flat_map(|id| self.loaded.config.identities[id].members.iter().cloned())
+                    .collect();
+                (secret, members)
+            })
+            .collect())
     }
 
-    /// 雛形とリソースが合っているか、プロバイダーに型があるか。問題の一覧（空ならよい）
-    pub async fn check(&self) -> anyhow::Result<Vec<String>> {
-        let mut problems = Vec::new();
+    /// 雛形とリソースが合っているか、プロバイダーに型があるか
+    pub async fn check(&self) -> anyhow::Result<Checked> {
+        let mut checked = Checked::default();
         let owned: BTreeSet<String> = self
             .loaded
             .config
@@ -221,19 +243,35 @@ impl<'a> Engine<'a> {
             .values()
             .flat_map(Resource::all_secrets)
             .collect();
-        for (role, names) in self.loaded.role_names()? {
-            for n in names.difference(&owned) {
-                problems.push(format!(
-                    "role {role}: {n} is in the templates but no resource makes it"
-                ));
+        let readers = self.loaded.readers()?;
+        let reads =
+            |id: &str, secret: &str| readers.get(secret).is_some_and(|ids| ids.contains(id));
+        for (id, names) in self.loaded.template_names()? {
+            for n in &names {
+                if !owned.contains(n) {
+                    checked.problems.push(format!(
+                        "identity {id}: {n} is in the templates but no resource makes it"
+                    ));
+                } else if !reads(&id, n) {
+                    checked.problems.push(format!(
+                        "identity {id}: {n} is in the templates but {id} cannot read it (add {id} to its readers)"
+                    ));
+                }
+            }
+            for secret in owned.difference(&names) {
+                if reads(&id, secret) {
+                    checked.warnings.push(format!(
+                        "identity {id}: can read {secret}, which its templates do not use"
+                    ));
+                }
             }
         }
         for (name, res) in &self.loaded.config.resources {
             if let Err(e) = self.providers.kind(name, res).await {
-                problems.push(format!("{e:#}"));
+                checked.problems.push(format!("{e:#}"));
             }
         }
-        Ok(problems)
+        Ok(checked)
     }
 
     /// 入れ物、ラベル、読む権限をそろえ、値のないリソースを作り、data を読み直す
@@ -564,15 +602,18 @@ impl<'a> Engine<'a> {
     }
 
     /// 前の形（雛形を手で埋めたファイル）から、値のない秘密に値を入れる
-    pub async fn import(&self, role: &str, dir: &Path) -> anyhow::Result<()> {
-        let r = self
+    pub async fn import(&self, identity: &str, dir: &Path) -> anyhow::Result<()> {
+        let i = self
             .loaded
             .config
-            .roles
-            .get(role)
-            .ok_or_else(|| anyhow::anyhow!("no role {role}"))?;
+            .identities
+            .get(identity)
+            .ok_or_else(|| anyhow::anyhow!("no identity {identity}"))?;
+        let templates = i.templates.as_deref().ok_or_else(|| {
+            anyhow::anyhow!("identity {identity} has no templates to match the files against")
+        })?;
         let mut values = BTreeMap::new();
-        for tpl in template::files(&self.loaded.path(&r.templates))? {
+        for tpl in template::files(&self.loaded.path(templates))? {
             let filled = dir.join(tpl.file_name().expect("a file"));
             let Ok(text) = std::fs::read_to_string(&filled) else {
                 continue;
@@ -950,14 +991,7 @@ impl<'a> Engine<'a> {
 
     /// リソースと秘密ごとの状態
     pub async fn status(&self) -> anyhow::Result<()> {
-        let readers = self.desired_readers()?;
-        let roles: BTreeMap<&String, &String> = self
-            .loaded
-            .config
-            .roles
-            .iter()
-            .map(|(n, r)| (&r.member, n))
-            .collect();
+        let readers = self.loaded.readers()?;
         for (name, res) in &self.loaded.config.resources {
             let gens = match self.store.get(res.primary()).await? {
                 Some(m) => generations(&m),
@@ -982,7 +1016,7 @@ impl<'a> Engine<'a> {
                     .get(&secret)
                     .into_iter()
                     .flatten()
-                    .map(|m| roles.get(m).map_or(m.clone(), |r| (*r).clone()))
+                    .cloned()
                     .collect();
                 println!(
                     "  {secret:<32} {:<12} {}",

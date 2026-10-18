@@ -99,11 +99,12 @@ async fn manages_secrets_end_to_end() {
     let engine = Engine::new(&loaded, &store);
 
     // 雛形にあるのに作るものがない名前を知らせる
-    let problems = engine.check().await.unwrap();
+    let checked = engine.check().await.unwrap();
     assert_eq!(
-        problems,
-        vec!["role monitor: NOT_MADE is in the templates but no resource makes it"]
+        checked.problems,
+        vec!["identity monitor: NOT_MADE is in the templates but no resource makes it"]
     );
+    assert!(checked.warnings.is_empty(), "{:?}", checked.warnings);
 
     // apply：入れ物、読む権限、値
     engine.apply().await.unwrap();
