@@ -11,6 +11,12 @@ Step by step, for a task.
 - [Admin credentials and CI](guides/admin-credentials.md): where to keep the credentials that make other credentials, and running tegata in CI without long-lived keys
 - [Publishing providers](guides/publishing-providers.md): release your own provider for `tegata init`, and how the official releases are made
 
+## Concepts
+
+Why things work the way they do.
+
+- [When a secret needs `previous`](concepts/previous-and-settle.md): who checks a value decides whether a rotation needs `previous` and `settle`, with a minute-by-minute example
+
 ## Reference
 
 Everything, exactly.
