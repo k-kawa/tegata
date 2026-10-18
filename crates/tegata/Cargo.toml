@@ -13,6 +13,7 @@ semver = "1.0.28"
 anyhow = "1"
 async-trait = "0.1"
 base64 = "0.22"
+crypto_box = { version = "0.9.1", features = ["seal"] }
 clap = { version = "4", features = ["derive", "env"] }
 tegata-plugin = { path = "../tegata-plugin" }
 rand = "0.8"

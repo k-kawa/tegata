@@ -7,6 +7,7 @@ store: { ... }      # where secrets are stored (required)
 roles: { ... }      # who reads which secrets (optional)
 providers: { ... }  # external providers (optional; random, manual and value are built in)
 resources: { ... }  # what to create (required)
+destinations: { ... } # where copies of secrets are written, such as GitHub Actions secrets (optional)
 ```
 
 A complete example that runs without a cloud account is in [examples/minimal](../examples/minimal).
@@ -142,6 +143,45 @@ Secret names may use letters, digits, `-`, and `_`, up to 255 characters. To use
 | `manual` | none | A value you put with `tegata set <resource>`. `apply` creates the secret but not the value |
 | `value` | A map of output name → string | The strings themselves. For non-secret values that templates need next to secrets (a sender address, a bucket name). Read again on every `apply` |
 
+## `destinations`
+
+A destination receives copies of secrets: tegata writes the latest value there whenever it changes. Today the only kind is **GitHub Actions secrets**, of a repository or of one of its environments.
+
+```yaml
+destinations:
+  releases-ci:
+    github: { repo: my-org/my-repo }
+    secrets: [RELEASES_ACCESS_KEY_ID, RELEASES_SECRET_ACCESS_KEY]
+  deploy:
+    github: { repo: my-org/my-repo, environment: production }
+    secrets:
+      DEPLOY_TOKEN: deploy_token_value   # name on GitHub: secret name in tegata
+```
+
+| Key | Description |
+| --- | --- |
+| `github.repo` | `owner/repo` |
+| `github.environment` | Optional. Write the secrets of this environment instead of the repository's. Environment secrets can be limited with protection rules (required reviewers, branches), and override repository secrets of the same name |
+| `secrets` | The secrets to deliver: a list (the same names on GitHub), or a map of name on GitHub → secret name in tegata. Any secret of a resource, including `previous` secrets |
+
+GitHub secret names may use letters, digits, and `_`, must not start with a digit or `GITHUB_`, and ignore case; tegata checks this when it loads the file. Rename secrets whose names do not fit with a map.
+
+**The store stays the source.** GitHub secrets can be written but never read back, and keep no versions, so a destination only receives copies. tegata records each delivery on the secret in the store (the annotation `tegata-delivered`: the version it wrote, where, and GitHub's update time right after writing).
+
+| Command | What happens at destinations |
+| --- | --- |
+| `apply` | Writes every secret whose latest version has not been delivered, or that was changed or removed on GitHub since tegata wrote it (the store's value wins, and tegata says so). A secret of the same name that tegata did not write is overwritten, also with a note. Secrets tegata delivered that are no longer in the configuration are removed from GitHub. Secrets tegata never wrote are never removed |
+| `rotate`, `set`, `settle`, `import` | Write the changed values (and anything else not delivered yet). Workflows use the new value from their next run; nothing needs restarting |
+| `prune` | Nothing (GitHub keeps only the latest value) |
+| `status` | For each destination and secret: delivered (version), not delivered yet, changed or missing on GitHub. Also lists the other secrets there, which tegata does not touch, and, for an environment, names that are also repository secrets |
+| `apply --dry-run` | Shows what would be written and removed |
+
+If writing fails (no permission, GitHub unreachable), the value is still in the store, the command ends with an error naming what was not delivered, and the next `apply` delivers it.
+
+**Token:** `TEGATA_GITHUB_TOKEN`, or else the login of the `gh` command-line tool (`gh auth token`). A fine-grained token needs the repository permission "Secrets" (for repository secrets) or "Environments" (for environment secrets), with write access, on the repositories it delivers to. It is a separate variable from `GITHUB_TOKEN`, which `tegata init` uses to read releases, so that a token that can write secrets is not used by accident.
+
+If you run on Google Cloud, consider also letting workflows read Secret Manager directly through Workload Identity Federation: make the workflow's identity a role's `member`, and no copy of the secret is kept on GitHub.
+
 ## Templates
 
 A template is a text file with placeholders:
@@ -201,6 +241,7 @@ Written by `tegata init` next to the YAML file, and meant to be committed. For e
 | `TEGATA_CACHE_DIR` | Where `tegata init` installs providers (default `$XDG_CACHE_HOME/tegata`, or `~/.cache/tegata`) |
 | `TEGATA_PROVIDER_MIRROR` | Install providers from a local directory, laid out as `<dir>/<source>/<version>/<file>` |
 | `GITHUB_TOKEN` | Sent to GitHub by `tegata init` (private repositories, higher rate limits) |
-| `TEGATA_GITHUB_API` | The GitHub API URL (default `https://api.github.com`) |
+| `TEGATA_GITHUB_TOKEN` | The token for writing GitHub Actions secrets ([destinations](#destinations)); without it, `gh auth token` |
+| `TEGATA_GITHUB_API` | The GitHub API URL, for `tegata init` and destinations (default `https://api.github.com`) |
 
 Variables named in `credentials` are read too. Variables that only tests use (to point tegata and the providers at fake servers) are listed in the source code and are not part of the interface.

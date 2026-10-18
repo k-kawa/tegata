@@ -17,6 +17,63 @@ pub struct Config {
     #[serde(default)]
     pub providers: BTreeMap<String, ProviderConfig>,
     pub resources: BTreeMap<String, Resource>,
+    /// Where copies of secrets are written (GitHub Actions secrets). The store stays the source
+    #[serde(default)]
+    pub destinations: BTreeMap<String, Destination>,
+}
+
+/// A place that receives copies of secrets. tegata writes there but never reads values back
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Destination {
+    pub github: GithubDestination,
+    /// The secrets to deliver: a list (same names), or a map of name there → secret name here
+    pub secrets: DeliveredSecrets,
+}
+
+/// GitHub Actions secrets of a repository, or of one of its environments
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct GithubDestination {
+    /// `owner/repo`
+    pub repo: String,
+    /// An environment of the repository (its secrets instead of the repository's)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment: Option<String>,
+}
+
+impl std::fmt::Display for GithubDestination {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.environment {
+            Some(env) => write!(f, "github {} (environment {env})", self.repo),
+            None => write!(f, "github {}", self.repo),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub enum DeliveredSecrets {
+    Same(Vec<String>),
+    Renamed(BTreeMap<String, String>),
+}
+
+impl Destination {
+    /// Name there → secret name here
+    pub fn secrets(&self) -> BTreeMap<String, String> {
+        match &self.secrets {
+            DeliveredSecrets::Same(names) => names.iter().map(|n| (n.clone(), n.clone())).collect(),
+            DeliveredSecrets::Renamed(map) => map.clone(),
+        }
+    }
+}
+
+/// A GitHub Actions secret name: letters, digits and `_`, not starting with a digit or `GITHUB_`
+pub fn valid_github_secret_name(s: &str) -> bool {
+    !s.is_empty()
+        && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+        && !s.as_bytes()[0].is_ascii_digit()
+        && !s.to_ascii_uppercase().starts_with("GITHUB_")
 }
 
 /// 置き場所（どちらか 1 つ）
@@ -197,6 +254,35 @@ impl Loaded {
                 if let Some(other) = owner.insert(secret.clone(), name) {
                     anyhow::bail!("secret {secret} is in both {other} and {name}");
                 }
+            }
+        }
+        for (name, d) in &self.config.destinations {
+            let gh = &d.github;
+            anyhow::ensure!(
+                gh.repo.split('/').count() == 2 && gh.repo.split('/').all(|p| !p.is_empty()),
+                "destination {name}: repo looks like owner/repo"
+            );
+            anyhow::ensure!(
+                gh.environment.as_deref() != Some(""),
+                "destination {name}: environment is empty"
+            );
+            let secrets = d.secrets();
+            anyhow::ensure!(!secrets.is_empty(), "destination {name}: secrets is empty");
+            let mut seen = BTreeSet::new();
+            for (there, here) in &secrets {
+                anyhow::ensure!(
+                    valid_github_secret_name(there),
+                    "destination {name}: {there:?} is not a valid GitHub secret name \
+                     (letters, digits and _, not starting with a digit or GITHUB_; rename it with a map)"
+                );
+                anyhow::ensure!(
+                    seen.insert(there.to_ascii_uppercase()),
+                    "destination {name}: {there} is listed twice (GitHub secret names ignore case)"
+                );
+                anyhow::ensure!(
+                    owner.contains_key(here),
+                    "destination {name}: no resource makes {here}"
+                );
             }
         }
         Ok(())
