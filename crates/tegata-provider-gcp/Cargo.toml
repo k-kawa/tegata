@@ -1,0 +1,32 @@
+[package]
+name = "tegata-provider-gcp"
+description = "tegata のプロバイダー：Google Cloud"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.87"
+license = "Apache-2.0"
+publish = false
+
+[dependencies]
+anyhow = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "std"] }
+rand = "0.8"
+async-trait = "0.1"
+tegata-plugin = { path = "../tegata-plugin" }
+reqwest = { version = "0.13", default-features = false, features = ["stream", "json", "form", "rustls-no-provider"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "process"] }
+
+[dev-dependencies]
+axum = { version = "0.8", features = ["macros"] }
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+
+[dev-dependencies.tokio]
+version = "1"
+features = ["macros", "rt-multi-thread", "net", "signal", "process", "io-util"]

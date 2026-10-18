@@ -1,0 +1,33 @@
+[package]
+name = "tegata-provider-aws"
+description = "tegata のプロバイダー：AWS"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.87"
+license = "Apache-2.0"
+publish = false
+
+[dependencies]
+anyhow = "1"
+async-trait = "0.1"
+# AWS の SDK。TLS の暗号は ring にし、aws-lc-rs（C）を引き込まない（このリポジトリの決まり）
+aws-config = { version = "1", default-features = false, features = ["rt-tokio", "credentials-process", "sso", "behavior-version-latest"] }
+aws-sdk-iam = { version = "1", default-features = false, features = ["rt-tokio", "behavior-version-latest"] }
+aws-smithy-http-client = { version = "1", default-features = false, features = ["rustls-ring"] }
+base64 = "0.22"
+hmac = "0.12"
+tegata-plugin = { path = "../tegata-plugin" }
+serde_json = "1"
+sha2 = "0.10"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "rt"] }
+
+[dev-dependencies]
+axum = { version = "0.8", features = ["macros"] }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "process", "io-util"] }
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }

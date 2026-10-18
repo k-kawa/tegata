@@ -1,0 +1,36 @@
+[package]
+name = "tegata-provider-cloudflare"
+description = "tegata のプロバイダー：cloudflare"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.87"
+license = "Apache-2.0"
+publish = false
+
+[dependencies]
+anyhow = "1"
+base64 = "0.22"
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "std"] }
+rand = "0.8"
+async-trait = "0.1"
+tegata-plugin = { path = "../tegata-plugin" }
+reqwest = { version = "0.13", default-features = false, features = ["stream", "json", "form", "rustls-no-provider"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "process"] }
+
+[dev-dependencies]
+axum = { version = "0.8", features = ["macros"] }
+base64 = "0.22"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+
+[dev-dependencies.tokio]
+version = "1"
+features = ["macros", "rt-multi-thread", "net", "signal", "process", "io-util"]
