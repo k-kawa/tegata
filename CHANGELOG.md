@@ -4,6 +4,12 @@ All notable changes to tegata and the providers in this repository, which share 
 
 ## [Unreleased]
 
+### Added
+
+- **Environments** (#6): staging, production, and others share one configuration and differ only in the store, the members of each identity, provider settings and credentials, resource settings, and destinations. Each environment's overrides are in a file of their own (`environments: { production: envs/production.yaml }`) or inline. Choose one with `-e <name>` or `TEGATA_ENV`; `tegata env <name>` prints its merged configuration.
+- `confirm: true` in an environment makes commands that change the store say what they will do there and ask for the environment's name. `--yes` skips the question, and is now accepted by `settle`, `prune`, `set` and `import` too.
+- Secrets of an environment are labeled `tegata-env=<name>`, and tegata refuses to touch another environment's secrets. `tegata check` without `-e` checks every environment, and reports environments that share a Google Cloud project or an IAM member.
+
 ## [0.2.0] - 2026-10-19
 
 0.2.0 changes the shape of `tegata.yaml`. Files written for 0.1 still work, with a warning, and `tegata migrate` prints them in the new shape.

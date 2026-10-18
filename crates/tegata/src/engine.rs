@@ -15,6 +15,8 @@ use crate::template;
 
 const MANAGED_BY: &str = "managed-by";
 const RESOURCE: &str = "tegata-resource";
+/// The environment a secret belongs to, when the configuration has environments
+const ENV: &str = "tegata-env";
 const GEN_PREFIX: &str = "tegata-gen-";
 
 /// 1 つの世代の記録（リソースの最初の秘密の注記）
@@ -38,6 +40,28 @@ pub fn generations(meta: &SecretMeta) -> BTreeMap<u64, Generation> {
             Some((n, serde_json::from_str(v).ok()?))
         })
         .collect()
+}
+
+/// Asks for the environment's name: `--yes` passes, a terminal is needed otherwise, and only the
+/// exact name continues
+fn confirm_name(
+    env: &str,
+    approval: Approval,
+    terminal: bool,
+    input: &mut dyn std::io::BufRead,
+) -> anyhow::Result<()> {
+    if approval == Approval::Yes {
+        return Ok(());
+    }
+    anyhow::ensure!(
+        terminal,
+        "environment {env} asks before changing the store; run in a terminal to confirm, or pass --yes"
+    );
+    eprint!("Type the environment name to continue: ");
+    let mut answer = String::new();
+    input.read_line(&mut answer)?;
+    anyhow::ensure!(answer.trim() == env, "cancelled");
+    Ok(())
 }
 
 /// What `check` found
@@ -210,11 +234,29 @@ impl<'a> Engine<'a> {
             .ok_or_else(|| anyhow::anyhow!("no resource {name} in the config"))
     }
 
-    fn labels(resource: &str) -> BTreeMap<String, String> {
-        BTreeMap::from([
+    fn labels(&self, resource: &str) -> BTreeMap<String, String> {
+        let mut labels = BTreeMap::from([
             (MANAGED_BY.to_owned(), "tegata".to_owned()),
             (RESOURCE.to_owned(), resource.to_owned()),
-        ])
+        ]);
+        if let Some(env) = &self.loaded.config.environment {
+            labels.insert(ENV.to_owned(), env.clone());
+        }
+        labels
+    }
+
+    /// In an environment with `confirm: true`, says what the command will do there and asks for
+    /// the environment's name (`--yes` skips the question). Elsewhere, and for `--dry-run`, nothing
+    fn confirm_environment(&self, what: &str) -> anyhow::Result<()> {
+        let config = &self.loaded.config;
+        if !config.confirm || self.approval == Approval::DryRun {
+            return Ok(());
+        }
+        let env = config.environment.as_deref().unwrap_or_default();
+        eprintln!("{env}: {what}");
+        use std::io::IsTerminal;
+        let stdin = std::io::stdin();
+        confirm_name(env, self.approval, stdin.is_terminal(), &mut stdin.lock())
     }
 
     /// 秘密 → 読む相手（その秘密を読む identity のメンバー）
@@ -286,6 +328,15 @@ impl<'a> Engine<'a> {
     /// 入れ物、ラベル、読む権限をそろえ、値のないリソースを作り、data を読み直す
     /// 失敗したリソースがあっても、ほかは続ける（鍵のないプロバイダーがあっても、ほかをそろえられるように）
     pub async fn apply(&self) -> anyhow::Result<()> {
+        let env = self
+            .loaded
+            .config
+            .environment
+            .as_deref()
+            .unwrap_or_default();
+        self.confirm_environment(&format!(
+            "apply the configuration (to see what changes first: tegata -e {env} apply --dry-run)"
+        ))?;
         if !self.approve(&self.to_fill().await?).await? {
             // dry-run：届け先に書くもの、消すものも出す
             return self.deliver(true, true).await;
@@ -327,13 +378,17 @@ impl<'a> Engine<'a> {
         secret: &str,
         readers: BTreeSet<String>,
     ) -> anyhow::Result<()> {
-        let labels = Self::labels(resource);
+        let labels = self.labels(resource);
         match self.store.get(secret).await? {
             None => {
                 self.store.create(secret, &labels).await?;
                 println!("created secret {secret}");
             }
             Some(mut meta) => {
+                if let Some(other) = meta.labels.get(ENV).filter(|e| Some(*e) != labels.get(ENV)) {
+                    // ほかの環境の秘密には触らない（同じプロジェクトを使っている）
+                    anyhow::bail!("secret {secret} belongs to environment {other}");
+                }
                 if let Some(other) = meta.labels.get(RESOURCE).filter(|r| r.as_str() != resource) {
                     // 設定にないリソース（名前を替えた、まとめた）のものなら引き継ぐ。あるリソースのものは取らない
                     anyhow::ensure!(
@@ -342,8 +397,9 @@ impl<'a> Engine<'a> {
                     );
                     println!("secret {secret}: moved from resource {other} to {resource}");
                 }
-                if meta.labels.get(MANAGED_BY) != labels.get(MANAGED_BY)
-                    || meta.labels.get(RESOURCE) != labels.get(RESOURCE)
+                if [MANAGED_BY, RESOURCE, ENV]
+                    .iter()
+                    .any(|k| labels.contains_key(*k) && meta.labels.get(*k) != labels.get(*k))
                 {
                     meta.labels.extend(labels);
                     self.store.update_meta(secret, &meta).await?;
@@ -495,6 +551,7 @@ impl<'a> Engine<'a> {
                 "{name} is read from its provider (apply refreshes it)"
             );
         }
+        self.confirm_environment(&format!("make a new generation of {}", names.join(", ")))?;
         if !self.approve(names).await? {
             return Ok(());
         }
@@ -513,6 +570,7 @@ impl<'a> Engine<'a> {
             self.providers.kind(name, res).await? == Kind::Managed,
             "{name} is read from its provider (apply refreshes it)"
         );
+        self.confirm_environment(&format!("put a new value of {name}"))?;
         let readers = self.desired_readers()?;
         for secret in res.all_secrets() {
             self.ensure_secret(
@@ -551,7 +609,13 @@ impl<'a> Engine<'a> {
         for name in names {
             let res = self.resource(name)?;
             anyhow::ensure!(res.previous.is_some(), "{name} has no previous");
-            self.copy_to_previous(res).await?;
+        }
+        self.confirm_environment(&format!(
+            "make previous equal to the current value of {} (the old value stops being accepted)",
+            names.join(", ")
+        ))?;
+        for name in names {
+            self.copy_to_previous(self.resource(name)?).await?;
         }
         self.deliver(false, false).await
     }
@@ -563,6 +627,13 @@ impl<'a> Engine<'a> {
         } else {
             names.to_vec()
         };
+        for name in &names {
+            self.resource(name)?;
+        }
+        self.confirm_environment(&format!(
+            "delete what providers made for older generations of {}, and disable their versions",
+            names.join(", ")
+        ))?;
         for name in &names {
             let res = self.resource(name)?;
             let Some(mut meta) = self.store.get(res.primary()).await? else {
@@ -613,6 +684,10 @@ impl<'a> Engine<'a> {
     /// 前の形（雛形を手で埋めたファイル）から、値のない秘密に値を入れる。
     /// `dir` のファイルを、`templates` の同じ名前の雛形と突き合わせて値を取り出す
     pub async fn import(&self, templates: &Path, dir: &Path) -> anyhow::Result<()> {
+        self.confirm_environment(&format!(
+            "put the values in {} into secrets that have none",
+            dir.display()
+        ))?;
         let mut values = BTreeMap::new();
         for tpl in template::files(templates)? {
             let filled = dir.join(tpl.file_name().expect("a file"));
@@ -1048,5 +1123,30 @@ impl<'a> Engine<'a> {
             }
         }
         self.destinations_status().await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn asks_for_the_environment_name() {
+        let ask = |answer: &str, terminal: bool, approval: Approval| {
+            confirm_name("production", approval, terminal, &mut answer.as_bytes())
+        };
+        assert!(ask("production\n", true, Approval::Ask).is_ok());
+        assert!(ask("  production  \n", true, Approval::Ask).is_ok());
+        let wrong = ask("yes\n", true, Approval::Ask).unwrap_err().to_string();
+        assert_eq!(wrong, "cancelled");
+        assert!(ask("", true, Approval::Ask).is_err(), "no answer");
+        let no_terminal = ask("production\n", false, Approval::Ask)
+            .unwrap_err()
+            .to_string();
+        assert!(no_terminal.contains("pass --yes"), "{no_terminal}");
+        assert!(
+            ask("", false, Approval::Yes).is_ok(),
+            "--yes needs no terminal"
+        );
     }
 }

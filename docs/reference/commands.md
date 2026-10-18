@@ -9,11 +9,12 @@ Every command of `tegata`, its options, and what it prints. The outputs below we
 | [`status`](#tegata-status) | `tegata status` | no | `describe` |
 | [`apply`](#tegata-apply) | `tegata apply [--yes \| --dry-run]` | yes | `create`, `read` |
 | [`rotate`](#tegata-rotate) | `tegata rotate [--yes \| --dry-run] <resource>...` | yes | `create` |
-| [`settle`](#tegata-settle) | `tegata settle <resource>...` | yes | no |
-| [`prune`](#tegata-prune) | `tegata prune [<resource>...]` | yes | `delete` |
-| [`set`](#tegata-set) | `tegata set <resource>` | yes | no |
-| [`import`](#tegata-import) | `tegata import <templates> <dir>` | yes | no |
+| [`settle`](#tegata-settle) | `tegata settle [--yes] <resource>...` | yes | no |
+| [`prune`](#tegata-prune) | `tegata prune [--yes] [<resource>...]` | yes | `delete` |
+| [`set`](#tegata-set) | `tegata set [--yes] <resource>` | yes | no |
+| [`import`](#tegata-import) | `tegata import [--yes] <templates> <dir>` | yes | no |
 | [`migrate`](#tegata-migrate) | `tegata migrate` | no | no |
+| [`env`](#tegata-env) | `tegata env <name>` | no | no |
 | [`render`](#tegata-render) | `tegata render [--project <p> \| --store-dir <d>] <templates> <out>` | no | no |
 
 All commands except `render` run where you keep `tegata.yaml` and can administer the store. `render` runs on servers. Every command that changes a value (`apply`, `rotate`, `settle`, `set`, `import`) also writes the changed values to [destinations](configuration.md#destinations).
@@ -23,6 +24,7 @@ All commands except `render` run where you keep `tegata.yaml` and can administer
 | Option | Description |
 | --- | --- |
 | `-f, --file <FILE>` | The configuration file. Default `tegata.yaml`; also `TEGATA_FILE`. Not read by `render` |
+| `-e, --env <NAME>` | The [environment](configuration.md#environments), when the configuration has `environments`; also `TEGATA_ENV`. Every command but `render`, `init`, `check` and `env` needs it then |
 | `-h, --help` | Help for tegata or for one command (`tegata apply --help`) |
 | `-V, --version` | The version |
 
@@ -52,6 +54,7 @@ see: https://github.com/k-kawa/tegata/blob/main/docs/reference/commands.md#tegat
 | --- | --- | --- |
 | `tegata.yaml` | you | The [configuration](configuration.md). Commit it |
 | `tegata.lock` | `init` | The chosen provider versions, their requirement, signing key, and the SHA-256 of every platform's executable. Commit it |
+| Environment files | you | An environment's overrides, when `environments` names a file. Commit them |
 | Template directories | you | Files with `__NAME__` placeholders that `render` fills, usually one directory per identity |
 | `$TEGATA_CACHE_DIR/...` | `init` | The installed providers |
 | The output directory of `render` | `render` | Mode 0700; each file 0600, written to a temporary file and renamed |
@@ -103,6 +106,13 @@ see: https://github.com/k-kawa/tegata/blob/main/docs/reference/commands.md#tegat
 
 For a file in the [old form](configuration.md#the-old-form-and-tegata-migrate), `check` also compares every role's `templates`, since they decide what the role reads.
 
+When the configuration has [environments](configuration.md#environments), `check` without `-e` checks every one of them (each line starts with the environment's name), and reports environments that use the same Google Cloud project or give access to the same IAM member. With `-e`, it checks that environment only.
+
+```text
+$ tegata check app templates/app
+ok (staging, production)
+```
+
 ## tegata status
 
 ```text
@@ -143,7 +153,7 @@ A failure in one resource does not stop the others; the command ends with `faile
 
 | Option | Description |
 | --- | --- |
-| `--yes` | Do not ask before making values that stop the previous one at once. Required for those outside a terminal |
+| `--yes` | Do not ask: neither before making values that stop the previous one at once, nor in an environment with `confirm: true`. Required for those outside a terminal |
 | `--dry-run` | Show which resources would get a new generation and what destinations would receive; change nothing |
 
 ```text
@@ -175,7 +185,7 @@ session_key: generation 2
 ## tegata settle
 
 ```text
-tegata settle <resource>...
+tegata settle [--yes] <resource>...
 ```
 
 Copies the current value to `previous`, so the old value is no longer accepted. This ends a rotation. Fails with `<resource> has no previous` when the resource has no `previous`.
@@ -188,7 +198,7 @@ PREVIOUS_SESSION_KEY: version 2 (the value of SESSION_KEY)
 ## tegata prune
 
 ```text
-tegata prune [<resource>...]
+tegata prune [--yes] [<resource>...]
 ```
 
 For each generation older than the latest (of every resource, when none is named): asks the provider to delete what it made, then disables that generation's versions and removes its record. Also disables the older versions of `previous`. Versions are disabled, never destroyed.
@@ -207,7 +217,7 @@ PREVIOUS_SESSION_KEY: disabled version 1
 ## tegata set
 
 ```text
-tegata set <resource>
+tegata set [--yes] <resource>
 ```
 
 Puts a value by hand as a new generation: asked with hidden input on a terminal, otherwise read from standard input. Use it for `manual` resources, or to restore a value you kept. If the resource has `previous`, the current value is copied there first. Data resources are refused.
@@ -215,12 +225,13 @@ Puts a value by hand as a new generation: asked with hidden input on a terminal,
 ```sh
 tegata set admin_password
 op read op://infra/admin/password | tegata set admin_password
+op read op://infra/admin/password | tegata -e production set --yes admin_password   # production has confirm: true
 ```
 
 ## tegata import
 
 ```text
-tegata import <templates> <dir>
+tegata import [--yes] <templates> <dir>
 ```
 
 For moving to tegata. `<dir>` holds files with the same names as the templates in `<templates>`, filled in by hand before tegata (for example the configuration files your servers use today). tegata matches each file against its template, takes the values out, and puts them into the secrets that have no value yet. Secrets that already have one are skipped (`already has a value; skipped`). `prune` never deletes imported generations on the provider.
@@ -229,13 +240,34 @@ For moving to tegata. `<dir>` holds files with the same names as the templates i
 tegata import templates/app /etc/app
 ```
 
+`--yes` on `settle`, `prune`, `set` and `import` skips the question of an environment with `confirm: true` ([environments](configuration.md#environments)); elsewhere these commands do not ask.
+
+## tegata env
+
+```text
+tegata env <name>
+```
+
+Prints the configuration of one [environment](configuration.md#environments): the shared part with that environment's overrides merged in, which is what the commands use with `-e <name>`. Changes nothing. Comments are not kept, and `confirm` is shown as a comment, so the output loads as a configuration of its own (for comparing it with another file, as in the [guide](../guides/staging-and-production.md#2-check-that-nothing-changed)).
+
+```text
+$ tegata env production
+# confirm: true (commands that change the store ask first)
+stores:
+  main:
+    gcp:
+      location: asia-northeast1
+      project: myapp-prod
+...
+```
+
 ## tegata migrate
 
 ```text
 tegata migrate
 ```
 
-Prints the configuration in the current form to standard output, and changes nothing. For a file in the [old form](configuration.md#the-old-form-and-tegata-migrate) (`store`, `roles`, `resources.*.secrets`), each secret's `readers` are filled in from the templates, which is what `apply` grants today, so `apply` after migrating changes nothing in the store. Comments are not kept. Other commands still read an old-form file, with a warning that names `tegata migrate`.
+Prints the configuration in the current form to standard output, and changes nothing. For a file in the [old form](configuration.md#the-old-form-and-tegata-migrate) (`store`, `roles`, `resources.*.secrets`), each secret's `readers` are filled in from the templates, which is what `apply` grants today, so `apply` after migrating changes nothing in the store. Comments are not kept. Other commands still read an old-form file, with a warning that names `tegata migrate`. A file with `environments` is in the current form already, and `migrate` says so.
 
 ```text
 $ tegata migrate > tegata.new.yaml

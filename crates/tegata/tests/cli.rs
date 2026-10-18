@@ -344,7 +344,7 @@ fn help_and_errors_link_to_the_docs() {
     check_links(&out);
     for command in [
         "init", "check", "status", "apply", "rotate", "set", "settle", "prune", "import",
-        "migrate", "render",
+        "migrate", "env", "render",
     ] {
         let (ok, out) = tegata(dir, &[command, "--help"], None);
         assert!(ok, "{out}");
@@ -527,4 +527,138 @@ resources:
     assert!(ok, "{out}");
     assert!(out.contains("TUNNEL: version 1 (imported)"), "{out}");
     assert!(out.contains("KEY: already has a value; skipped"), "{out}");
+}
+
+/// Environments: -e chooses one, each is labeled, check looks at all of them, and an environment
+/// with confirm asks before every command that changes the store
+#[test]
+fn environments_are_chosen_labeled_checked_and_confirmed() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    std::fs::create_dir_all(dir.join("envs")).unwrap();
+    std::fs::create_dir_all(dir.join("tpl")).unwrap();
+    std::fs::write(dir.join("tpl/app.env"), "K=__KEY__\nM=__MAIL__\n").unwrap();
+    let shared = r#"
+stores:
+  main: { local: { dir: shared } }
+identities:
+  app: []
+environments:
+  staging: envs/staging.yaml
+  production:
+    confirm: true
+    stores: { main: { local: { dir: prod } } }
+    identities: { app: [serviceAccount:app@prod] }
+resources:
+  key:
+    provider: random
+    stores: { main: [{ name: KEY, readers: [app] }] }
+    previous: { name: KEY_PREV }
+  mail:
+    provider: manual
+    stores: { main: [{ name: MAIL, readers: [app] }] }
+"#;
+    std::fs::write(dir.join("tegata.yaml"), shared).unwrap();
+    std::fs::write(
+        dir.join("envs/staging.yaml"),
+        "stores: { main: { local: { dir: stg } } }\nidentities: { app: [serviceAccount:app@stg] }\n",
+    )
+    .unwrap();
+    let env = |e: &str, args: &[&str], stdin: Option<&str>| {
+        let mut all = vec!["-e", e];
+        all.extend_from_slice(args);
+        tegata(dir, &all, stdin)
+    };
+
+    let (ok, out) = tegata(dir, &["status"], None);
+    assert!(!ok);
+    assert!(
+        out.contains("choose one with -e (staging, production)"),
+        "{out}"
+    );
+    let (ok, out) = tegata(dir, &["migrate"], None);
+    assert!(!ok && out.contains("current form already"), "{out}");
+    let (ok, out) = tegata(dir, &["init"], None);
+    assert!(
+        ok && out.contains("no providers with a source"),
+        "init needs no -e: {out}"
+    );
+
+    // staging: no confirm; secrets are labeled with their environment
+    let (ok, out) = env("staging", &["apply"], None);
+    assert!(ok, "{out}");
+    assert!(
+        out.contains("readers of KEY: serviceAccount:app@stg"),
+        "{out}"
+    );
+    let key = std::fs::read_to_string(dir.join("stg/KEY.json")).unwrap();
+    assert!(key.contains("\"tegata-env\": \"staging\""), "{key}");
+
+    // production asks; outside a terminal it needs --yes, for every command that changes the store
+    let (ok, out) = env("production", &["apply"], None);
+    assert!(!ok);
+    assert!(out.contains("production: apply the configuration"), "{out}");
+    assert!(out.contains("pass --yes"), "{out}");
+    assert!(!dir.join("prod").exists(), "nothing was written");
+    let (ok, out) = env("production", &["apply", "--dry-run"], None);
+    assert!(ok, "dry-run changes nothing, so it does not ask: {out}");
+    let (ok, out) = env("production", &["apply", "--yes"], None);
+    assert!(ok, "{out}");
+    let tpl = dir.join("tpl");
+    let tpl = tpl.to_str().unwrap();
+    for (args, stdin) in [
+        (vec!["set", "mail"], Some("m@x")),
+        (vec!["rotate", "key"], None),
+        (vec!["settle", "key"], None),
+        (vec!["prune"], None),
+        (vec!["import", tpl, tpl], None),
+    ] {
+        let (ok, out) = env("production", &args, stdin);
+        assert!(!ok && out.contains("pass --yes"), "{args:?}: {out}");
+        let mut yes = args.clone();
+        yes.push("--yes");
+        let (ok, out) = env("production", &yes, stdin);
+        assert!(ok, "{yes:?}: {out}");
+        assert!(out.contains("production: "), "says what it does: {out}");
+    }
+    let (ok, out) = env("production", &["status"], None);
+    assert!(
+        ok && !out.contains("production:"),
+        "read-only commands never ask: {out}"
+    );
+
+    // check: every environment, and environments that share a member
+    let (ok, out) = tegata(dir, &["check", "app", tpl], None);
+    assert!(ok && out.contains("ok (staging, production)"), "{out}");
+    let (ok, out) = tegata(dir, &["env", "production"], None);
+    assert!(ok && out.contains("dir: prod"), "{out}");
+    assert!(
+        out.starts_with("# confirm: true"),
+        "shown, but as a comment: {out}"
+    );
+    let merged = dir.join("merged");
+    std::fs::create_dir_all(&merged).unwrap();
+    std::fs::write(merged.join("tegata.yaml"), &out).unwrap();
+    let (ok, out) = tegata(&merged, &["migrate"], None);
+    assert!(ok, "the output loads as a configuration: {out}");
+    std::fs::write(
+        dir.join("envs/staging.yaml"),
+        "stores: { main: { local: { dir: prod } } }\nidentities: { app: [serviceAccount:app@prod] }\n",
+    )
+    .unwrap();
+    let (ok, out) = tegata(dir, &["check"], None);
+    assert!(!ok);
+    assert!(
+        out.contains(
+            "environments staging and production both give access to serviceAccount:app@prod"
+        ),
+        "{out}"
+    );
+    // a store that holds another environment's secrets is left alone
+    let (ok, out) = env("staging", &["apply"], None);
+    assert!(!ok);
+    assert!(
+        out.contains("secret KEY belongs to environment production"),
+        "{out}"
+    );
 }

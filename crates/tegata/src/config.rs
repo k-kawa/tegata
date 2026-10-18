@@ -28,6 +28,10 @@ pub struct Config {
     pub destinations: BTreeMap<String, Destination>,
     /// Read access comes from the templates (the old form) instead of `readers`
     pub readers_from_templates: bool,
+    /// The environment this configuration was merged for (`-e`), if the file has environments
+    pub environment: Option<String>,
+    /// Commands that change the store ask first (`confirm: true` in the environment)
+    pub confirm: bool,
 }
 
 /// One or more IAM members that read secrets
@@ -203,6 +207,9 @@ struct RawConfig {
     resources: BTreeMap<String, RawResource>,
     #[serde(default)]
     destinations: BTreeMap<String, Destination>,
+    /// Only from an environment's overrides
+    #[serde(default)]
+    confirm: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -402,6 +409,8 @@ impl RawConfig {
                 resources,
                 destinations: self.destinations,
                 readers_from_templates: old,
+                environment: None,
+                confirm: self.confirm,
             },
             warnings,
         ))
@@ -418,25 +427,33 @@ pub struct Loaded {
 }
 
 impl Loaded {
+    /// A file without environments
     pub fn load(path: &Path) -> anyhow::Result<Self> {
-        let text = std::fs::read_to_string(path)
-            .with_context(|| format!("cannot read {}", path.display()))?;
-        let raw: RawConfig = serde_yaml_ng::from_str(&text)
-            .with_context(|| format!("invalid {}", path.display()))?;
-        let (config, warnings) = raw
+        Self::load_env(path, None)
+    }
+
+    /// The configuration for one environment (`-e`), or the file as it is when it has none
+    pub fn load_env(path: &Path, env: Option<&str>) -> anyhow::Result<Self> {
+        let (value, environment) = merged(path, env)?;
+        let raw: RawConfig = serde_yaml_ng::from_value(value)
+            .with_context(|| format!("invalid {}", describe(path, environment.as_deref())))?;
+        let (mut config, warnings) = raw
             .into_config()
-            .with_context(|| format!("invalid {}", path.display()))?;
-        let base_dir = path
-            .parent()
-            .map(Path::to_path_buf)
-            .filter(|p| !p.as_os_str().is_empty())
-            .unwrap_or_else(|| PathBuf::from("."));
+            .with_context(|| format!("invalid {}", describe(path, environment.as_deref())))?;
+        anyhow::ensure!(
+            environment.is_none() || !config.readers_from_templates,
+            "{}: environments go with the current form (stores, identities); run `tegata migrate` first",
+            path.display()
+        );
+        config.environment = environment;
         let loaded = Self {
             config,
-            base_dir,
+            base_dir: base_dir_of(path),
             warnings,
         };
-        loaded.validate()?;
+        loaded
+            .validate()
+            .with_context(|| describe(path, loaded.config.environment.as_deref()))?;
         Ok(loaded)
     }
 
@@ -673,6 +690,244 @@ fn names_or_nobody(ids: &BTreeSet<String>) -> String {
     }
 }
 
+// --- Environments ---
+
+/// The keys an environment may override; everything else is shared
+const OVERRIDABLE: &str = "stores, identities.<i>, providers.<p>.config and .credentials, \
+                           resources.<r>.config, destinations, and confirm";
+
+fn base_dir_of(path: &Path) -> PathBuf {
+    path.parent()
+        .map(Path::to_path_buf)
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+fn describe(path: &Path, env: Option<&str>) -> String {
+    match env {
+        Some(e) => format!("{} (environment {e})", path.display()),
+        None => path.display().to_string(),
+    }
+}
+
+fn read_yaml(path: &Path) -> anyhow::Result<serde_yaml_ng::Value> {
+    let text =
+        std::fs::read_to_string(path).with_context(|| format!("cannot read {}", path.display()))?;
+    serde_yaml_ng::from_str(&text).with_context(|| format!("invalid {}", path.display()))
+}
+
+/// The names of the environments in a configuration file (empty when it has none)
+pub fn environment_names(path: &Path) -> anyhow::Result<Vec<String>> {
+    let root = read_yaml(path)?;
+    Ok(root
+        .get("environments")
+        .and_then(serde_yaml_ng::Value::as_mapping)
+        .map(|m| {
+            m.keys()
+                .filter_map(|k| k.as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default())
+}
+
+/// The file with one environment's overrides merged over the shared part, as YAML (`tegata env`).
+/// `confirm` is shown as a comment, so that the output loads as a file without environments
+pub fn merged_yaml(path: &Path, env: &str) -> anyhow::Result<String> {
+    let (mut value, _) = merged(path, Some(env))?;
+    let confirm = match &mut value {
+        serde_yaml_ng::Value::Mapping(m) => m.remove("confirm"),
+        _ => None,
+    };
+    let yaml = serde_yaml_ng::to_string(&value)?;
+    Ok(match confirm.and_then(|c| c.as_bool()) {
+        Some(true) => format!("# confirm: true (commands that change the store ask first)\n{yaml}"),
+        _ => yaml,
+    })
+}
+
+/// The shared part with the environment's overrides merged in, and the environment's name
+fn merged(
+    path: &Path,
+    env: Option<&str>,
+) -> anyhow::Result<(serde_yaml_ng::Value, Option<String>)> {
+    use serde_yaml_ng::Value;
+    let mut root = read_yaml(path)?;
+    let environments = match &mut root {
+        Value::Mapping(m) => m.remove("environments"),
+        _ => None,
+    };
+    let Some(environments) = environments else {
+        if let Some(e) = env {
+            anyhow::bail!("{} has no environments (there is no {e})", path.display());
+        }
+        anyhow::ensure!(
+            root.get("confirm").is_none(),
+            "{}: confirm goes in an environment",
+            path.display()
+        );
+        return Ok((root, None));
+    };
+    let envs = environments.as_mapping().ok_or_else(|| {
+        anyhow::anyhow!(
+            "{}: environments is a map of name → file or overrides",
+            path.display()
+        )
+    })?;
+    let names: Vec<&str> = envs.keys().filter_map(Value::as_str).collect();
+    let Some(e) = env else {
+        anyhow::bail!(
+            "{} has environments; choose one with -e ({})",
+            path.display(),
+            names.join(", ")
+        );
+    };
+    let over = envs.get(e).ok_or_else(|| {
+        anyhow::anyhow!(
+            "{} has no environment {e} (it has {})",
+            path.display(),
+            names.join(", ")
+        )
+    })?;
+    let (over, place) = match over {
+        Value::String(file) => {
+            let p = base_dir_of(path).join(file);
+            let v = read_yaml(&p)?;
+            (v, format!("environment {e} ({})", p.display()))
+        }
+        Value::Mapping(_) => (over.clone(), format!("environment {e}")),
+        _ => anyhow::bail!(
+            "{}: environment {e} is a path to a file, or a map of overrides",
+            path.display()
+        ),
+    };
+    for key in ["store", "roles", "confirm"] {
+        anyhow::ensure!(
+            root.get(key).is_none(),
+            "{}: {}",
+            path.display(),
+            if key == "confirm" {
+                "confirm goes in an environment, not in the shared part".to_owned()
+            } else {
+                format!("{key} is the old form; environments go with stores and identities (run `tegata migrate` first)")
+            }
+        );
+    }
+    check_overrides(&root, &over).with_context(|| place.clone())?;
+    merge(&mut root, over);
+    Ok((root, Some(e.to_owned())))
+}
+
+/// An environment overrides only what may differ (`OVERRIDABLE`), and only what the shared part
+/// declares (identities, providers, resources), so that environments cannot drift apart
+fn check_overrides(
+    shared: &serde_yaml_ng::Value,
+    over: &serde_yaml_ng::Value,
+) -> anyhow::Result<()> {
+    use serde_yaml_ng::Value;
+    let map = |v: &'_ Value, what: &str| -> anyhow::Result<Vec<(String, Value)>> {
+        let m = v
+            .as_mapping()
+            .ok_or_else(|| anyhow::anyhow!("{what} is a map"))?;
+        Ok(m.iter()
+            .map(|(k, v)| (k.as_str().unwrap_or_default().to_owned(), v.clone()))
+            .collect())
+    };
+    let declared =
+        |section: &str, name: &str| shared.get(section).and_then(|s| s.get(name)).is_some();
+    for (key, v) in map(over, "the overrides")? {
+        match key.as_str() {
+            "stores" | "destinations" => {}
+            "confirm" => anyhow::ensure!(v.is_bool(), "confirm is true or false"),
+            "identities" => {
+                for (i, members) in map(&v, "identities")? {
+                    anyhow::ensure!(
+                        declared("identities", &i),
+                        "identities.{i}: declare it in the shared part (with [] when its members come from the environments)"
+                    );
+                    anyhow::ensure!(
+                        members.is_sequence(),
+                        "identities.{i}: a list of IAM members"
+                    );
+                }
+            }
+            "providers" | "resources" => {
+                let allowed: &[&str] = if key == "providers" {
+                    &["config", "credentials"]
+                } else {
+                    &["config"]
+                };
+                for (name, o) in map(&v, &key)? {
+                    anyhow::ensure!(
+                        declared(&key, &name),
+                        "{key}.{name}: not in the shared part (environments cannot add {key})"
+                    );
+                    for (k, _) in map(&o, &format!("{key}.{name}"))? {
+                        anyhow::ensure!(
+                            allowed.contains(&k.as_str()),
+                            "{key}.{name}.{k} cannot differ between environments (only {OVERRIDABLE})"
+                        );
+                    }
+                }
+            }
+            other => {
+                anyhow::bail!("{other} cannot differ between environments (only {OVERRIDABLE})")
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Maps merge key by key; anything else (scalars, lists) is replaced
+fn merge(base: &mut serde_yaml_ng::Value, over: serde_yaml_ng::Value) {
+    use serde_yaml_ng::Value;
+    match (base, over) {
+        (Value::Mapping(b), Value::Mapping(o)) => {
+            for (k, v) in o {
+                match b.get_mut(&k) {
+                    Some(existing) => merge(existing, v),
+                    None => {
+                        b.insert(k, v);
+                    }
+                }
+            }
+        }
+        (base, over) => *base = over,
+    }
+}
+
+/// Environments that share a Google Cloud project or an IAM member: values or access could leak
+/// between them
+pub fn isolation_problems(envs: &[Loaded]) -> Vec<String> {
+    let mut problems = Vec::new();
+    let mut projects: BTreeMap<&str, &str> = BTreeMap::new();
+    let mut members: BTreeMap<&str, &str> = BTreeMap::new();
+    for l in envs {
+        let env = l.config.environment.as_deref().unwrap_or("?");
+        if let Some(g) = &l.config.store.gcp {
+            if let Some(other) = projects.insert(&g.project, env) {
+                problems.push(format!(
+                    "environments {other} and {env} use the same project {}",
+                    g.project
+                ));
+            }
+        }
+        let mine: BTreeSet<&str> = l
+            .config
+            .identities
+            .values()
+            .flat_map(|i| i.members.iter().map(String::as_str))
+            .collect();
+        for m in mine {
+            if let Some(other) = members.insert(m, env) {
+                problems.push(format!(
+                    "environments {other} and {env} both give access to {m}"
+                ));
+            }
+        }
+    }
+    problems
+}
+
 /// Secret Manager のラベルの値に使える（英小文字・数字・- と _ の 63 文字まで）
 pub fn valid_label(s: &str) -> bool {
     (1..=63).contains(&s.len())
@@ -835,5 +1090,185 @@ resources:
             vec!["serviceAccount:a@x"]
         );
         assert!(!migrated.contains("output: value"), "{migrated}");
+    }
+
+    /// A shared part, an environment in a file, and one inline
+    fn environments(dir: &Path, staging: &str, production: &str) -> PathBuf {
+        std::fs::create_dir_all(dir.join("envs")).unwrap();
+        std::fs::write(dir.join("envs/staging.yaml"), staging).unwrap();
+        let path = dir.join("tegata.yaml");
+        std::fs::write(
+            &path,
+            format!(
+                r#"
+stores:
+  main: {{ gcp: {{ location: asia-northeast1 }} }}
+identities:
+  app: []
+providers:
+  gcp: {{ command: tegata-provider-gcp, config: {{ project: none }} }}
+environments:
+  staging: envs/staging.yaml
+  production:
+{production}
+resources:
+  key:
+    provider: random
+    stores: {{ main: [{{ name: KEY, readers: [app] }}] }}
+  db:
+    provider: gcp
+    type: sql_user
+    config: {{ user: app }}
+    stores: {{ main: [{{ output: password, name: DB_PASSWORD, readers: [app] }}] }}
+"#
+            ),
+        )
+        .unwrap();
+        path
+    }
+
+    const STAGING: &str = r#"
+stores: { main: { gcp: { project: myapp-stg } } }
+identities: { app: [serviceAccount:app@stg] }
+providers: { gcp: { config: { project: myapp-stg } } }
+resources: { db: { config: { instance: stg } } }
+"#;
+    const PRODUCTION: &str = r#"    confirm: true
+    stores: { main: { gcp: { project: myapp-prod } } }
+    identities: { app: [serviceAccount:app@prod] }
+    resources: { db: { config: { instance: prod } } }"#;
+
+    #[test]
+    fn merges_an_environment_over_the_shared_part() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = environments(dir.path(), STAGING, PRODUCTION);
+        assert_eq!(
+            environment_names(&path).unwrap(),
+            vec!["staging", "production"]
+        );
+
+        let stg = Loaded::load_env(&path, Some("staging")).unwrap();
+        let c = &stg.config;
+        assert_eq!(c.environment.as_deref(), Some("staging"));
+        assert!(!c.confirm);
+        let gcp = c.store.gcp.as_ref().unwrap();
+        assert_eq!(
+            (gcp.project.as_str(), gcp.location.as_str()),
+            ("myapp-stg", "asia-northeast1")
+        );
+        assert_eq!(c.identities["app"].members, vec!["serviceAccount:app@stg"]);
+        assert_eq!(c.providers["gcp"].config["project"], "myapp-stg");
+        // maps merge key by key: user from the shared part, instance from the environment
+        assert_eq!(
+            c.resources["db"].config,
+            serde_json::json!({ "user": "app", "instance": "stg" })
+        );
+
+        let prod = Loaded::load_env(&path, Some("production")).unwrap();
+        assert!(prod.config.confirm);
+        assert_eq!(
+            prod.config.store.gcp.as_ref().unwrap().project,
+            "myapp-prod"
+        );
+        assert_eq!(
+            prod.config.providers["gcp"].config["project"], "none",
+            "not overridden"
+        );
+        assert!(isolation_problems(&[stg, prod]).is_empty());
+
+        let merged = merged_yaml(&path, "production").unwrap();
+        assert!(
+            merged.contains("myapp-prod") && !merged.contains("environments"),
+            "{merged}"
+        );
+    }
+
+    #[test]
+    fn refuses_what_environments_cannot_do() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = |staging: &str, env: Option<&str>| {
+            let path = environments(dir.path(), staging, PRODUCTION);
+            format!("{:#}", Loaded::load_env(&path, env).unwrap_err())
+        };
+        let stg = Some("staging");
+        assert!(err(STAGING, None).contains("choose one with -e (staging, production)"));
+        assert!(err(STAGING, Some("dev")).contains("has no environment dev"));
+        for (overrides, message) in [
+            (
+                "resources: { key: { provider: manual } }",
+                "resources.key.provider cannot differ",
+            ),
+            (
+                "resources: { other: { config: {} } }",
+                "resources.other: not in the shared part",
+            ),
+            (
+                "providers: { gcp: { command: x } }",
+                "providers.gcp.command cannot differ",
+            ),
+            (
+                "identities: { ops: [user:a@x] }",
+                "identities.ops: declare it in the shared part",
+            ),
+            (
+                "identities: { app: user:a@x }",
+                "identities.app: a list of IAM members",
+            ),
+            ("roles: {}", "roles cannot differ"),
+            ("confirm: maybe", "confirm is true or false"),
+        ] {
+            let e = err(overrides, stg);
+            assert!(e.contains(message), "{overrides}: {e}");
+            assert!(e.contains("envs/staging.yaml"), "names the file: {e}");
+        }
+        // the shared part's empty identity must be filled in
+        assert!(
+            err("stores: { main: { gcp: { project: p } } }", stg).contains("at least one member")
+        );
+
+        let path = dir.path().join("tegata.yaml");
+        std::fs::write(
+            &path,
+            "stores: { main: { local: { dir: s } } }\nconfirm: true\nresources: {}\n",
+        )
+        .unwrap();
+        assert!(format!("{:#}", Loaded::load(&path).unwrap_err())
+            .contains("confirm goes in an environment"));
+        assert!(format!("{:#}", Loaded::load_env(&path, stg).unwrap_err())
+            .contains("has no environments"));
+        std::fs::write(
+            &path,
+            "store: { local: { dir: s } }\nenvironments: { a: {} }\nresources: {}\n",
+        )
+        .unwrap();
+        assert!(
+            format!("{:#}", Loaded::load_env(&path, Some("a")).unwrap_err()).contains("old form")
+        );
+        std::fs::write(&path, "stores: { main: { local: { dir: s } } }\nenvironments: { a: missing.yaml }\nresources: {}\n").unwrap();
+        assert!(
+            format!("{:#}", Loaded::load_env(&path, Some("a")).unwrap_err())
+                .contains("cannot read")
+        );
+    }
+
+    #[test]
+    fn finds_environments_that_share_a_project_or_a_member() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = PRODUCTION
+            .replace("myapp-prod", "myapp-stg")
+            .replace("app@prod", "app@stg");
+        let path = environments(dir.path(), STAGING, &shared);
+        let envs: Vec<Loaded> = ["staging", "production"]
+            .iter()
+            .map(|e| Loaded::load_env(&path, Some(e)).unwrap())
+            .collect();
+        let problems = isolation_problems(&envs);
+        assert_eq!(
+            problems,
+            vec![
+                "environments staging and production use the same project myapp-stg",
+                "environments staging and production both give access to serviceAccount:app@stg",
+            ]
+        );
     }
 }

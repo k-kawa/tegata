@@ -6,6 +6,7 @@ Step by step, for a task.
 
 - [Getting started](guides/getting-started.md): make, render, and rotate secrets on your machine, then move to Secret Manager
 - [Rotating secrets](guides/rotating-secrets.md): the steps for each kind of value, and what to do when something goes wrong
+- [Staging and production](guides/staging-and-production.md): one configuration for several environments, kept apart
 - [Publishing providers](guides/publishing-providers.md): release your own provider for `tegata init`, and how the official releases are made
 
 ## Reference
