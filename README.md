@@ -14,6 +14,7 @@ Cloud secret stores and Vault-style servers are good at *storing* secrets. Rotat
 - **Store and grant:** values go to Secret Manager. Each role (a server, a service account) can read exactly the secrets whose names appear in its templates, and nothing else.
 - **Rotate and clean up:** `tegata rotate` makes a new generation; after the servers pick it up, `tegata prune` deletes what the provider created for older generations (for example, the old API token) and disables the old versions.
 - **Fill in:** on a server, `tegata render` replaces `__NAME__` in templates with the stored values.
+- **Deliver:** copies of secrets can also go to GitHub Actions secrets (of a repository or an environment). tegata writes them again whenever the value changes, so CI picks up a rotation on its next run.
 
 Providers are separate executables that speak JSON over stdin and stdout, so you can add one in any language without changing tegata.
 
@@ -94,7 +95,7 @@ tegata prune session_key     # disable the old versions
 | `tegata init [--upgrade]` | Installs the providers that have a `source`, and writes `tegata.lock`. See [Installing providers](#installing-providers) |
 | `tegata check` | Checks the configuration, the providers, and that every `__NAME__` in the templates is made by some resource |
 | `tegata status` | Shows each resource and secret: generations, enabled versions, which roles read it. Also lists tegata secrets that are no longer in the YAML |
-| `tegata apply [--yes \| --dry-run]` | Creates secret containers, labels and read access; creates values that do not exist yet; re-reads `data` resources |
+| `tegata apply [--yes \| --dry-run]` | Creates secret containers, labels and read access; creates values that do not exist yet; re-reads `data` resources; writes [destinations](docs/configuration.md#destinations) |
 | `tegata rotate [--yes \| --dry-run] <resource>...` | Creates a new generation (copying the current value to `previous` first, if set) |
 | `tegata settle <resource>...` | Makes `previous` equal to the current value (the end of a rotation) |
 | `tegata prune [<resource>...]` | Deletes what providers created for older generations and disables those versions. Versions are disabled, not destroyed |

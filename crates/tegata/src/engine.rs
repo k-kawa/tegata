@@ -6,7 +6,9 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 use tegata_plugin::Kind;
 
-use crate::config::{Loaded, Resource};
+use crate::config::{GithubDestination, Loaded, Resource};
+use crate::deliver::github::{Github, GithubAccess, Token};
+use crate::deliver::{deliveries, Delivered, Destination as _};
 use crate::provider::{is_builtin, Providers};
 use crate::store::{latest_enabled, SecretMeta, Store};
 use crate::template;
@@ -55,7 +57,12 @@ pub struct Engine<'a> {
     pub store: &'a dyn Store,
     pub providers: Providers<'a>,
     pub approval: Approval,
+    /// The GitHub token for destinations (read when first needed)
+    github: Token,
 }
+
+/// One secret to deliver: (destination name, where, name there, secret name here)
+type Wanted<'c> = (&'c str, &'c GithubDestination, String, String);
 
 impl<'a> Engine<'a> {
     pub fn new(loaded: &'a Loaded, store: &'a dyn Store) -> Self {
@@ -64,7 +71,14 @@ impl<'a> Engine<'a> {
             store,
             providers: Providers::new(loaded),
             approval: Approval::default(),
+            github: Token::new(GithubAccess::from_env()),
         }
+    }
+
+    /// Where destinations reach GitHub (tests point it at a fake server)
+    pub fn with_github(mut self, access: GithubAccess) -> Self {
+        self.github = Token::new(access);
+        self
     }
 
     pub fn with_approval(mut self, approval: Approval) -> Self {
@@ -226,7 +240,8 @@ impl<'a> Engine<'a> {
     /// 失敗したリソースがあっても、ほかは続ける（鍵のないプロバイダーがあっても、ほかをそろえられるように）
     pub async fn apply(&self) -> anyhow::Result<()> {
         if !self.approve(&self.to_fill().await?).await? {
-            return Ok(());
+            // dry-run：届け先に書くもの、消すものも出す
+            return self.deliver(true, true).await;
         }
         let readers = self.desired_readers()?;
         let mut failed = Vec::new();
@@ -250,6 +265,10 @@ impl<'a> Engine<'a> {
                 eprintln!("error: {name}: {e:#}");
                 failed.push(name.clone());
             }
+        }
+        if let Err(e) = self.deliver(true, false).await {
+            eprintln!("error: destinations: {e:#}");
+            failed.push("destinations".to_owned());
         }
         anyhow::ensure!(failed.is_empty(), "failed: {}", failed.join(", "));
         Ok(())
@@ -436,7 +455,7 @@ impl<'a> Engine<'a> {
             self.new_generation(name, self.resource(name)?, true)
                 .await?;
         }
-        Ok(())
+        self.deliver(false, false).await
     }
 
     /// 値を手で入れる（端末なら聞く、そうでなければ標準入力）。manual のほか、控えておいた乱数の鍵を戻すときにも使う。
@@ -478,7 +497,7 @@ impl<'a> Engine<'a> {
                 self.copy_to_previous(res).await?;
             }
         }
-        Ok(())
+        self.deliver(false, false).await
     }
 
     pub async fn settle(&self, names: &[String]) -> anyhow::Result<()> {
@@ -487,7 +506,7 @@ impl<'a> Engine<'a> {
             anyhow::ensure!(res.previous.is_some(), "{name} has no previous");
             self.copy_to_previous(res).await?;
         }
-        Ok(())
+        self.deliver(false, false).await
     }
 
     /// 最新でない世代を片付ける（プロバイダーのものを消し、版を無効にする。版は消さない）
@@ -597,6 +616,335 @@ impl<'a> Engine<'a> {
                 self.record(name, res, record).await?;
             }
         }
+        self.deliver(false, false).await
+    }
+
+    /// 届け先に書くもの（設定の順）
+    fn wanted(&self) -> Vec<Wanted<'a>> {
+        let mut out = Vec::new();
+        for (dest, d) in &self.loaded.config.destinations {
+            for (there, here) in d.secrets() {
+                out.push((dest.as_str(), &d.github, there, here));
+            }
+        }
+        out
+    }
+
+    /// 届け先の今の秘密（名前は大文字。GitHub は大文字と小文字を区別しない）→ 変えた時刻
+    async fn remote(&self, to: &GithubDestination) -> anyhow::Result<BTreeMap<String, String>> {
+        Ok(Github::new(&self.github, to)
+            .list()
+            .await?
+            .into_iter()
+            .map(|(n, at)| (n.to_ascii_uppercase(), at))
+            .collect())
+    }
+
+    /// 秘密の最新の有効な版を、届け先に書く（届いていないもの、GitHub で書き換えられたものだけ）。
+    /// `cleanup` なら、設定から外したもの（tegata が届けたもの）を届け先から消す。`dry_run` なら出すだけ
+    async fn deliver(&self, cleanup: bool, dry_run: bool) -> anyhow::Result<()> {
+        let wanted = self.wanted();
+        let mut remotes: BTreeMap<GithubDestination, BTreeMap<String, String>> = BTreeMap::new();
+        let mut failed = Vec::new();
+        // 書いたもの：届け先 → (名前、秘密、版、届け先の名前)
+        let mut written: BTreeMap<GithubDestination, Vec<(String, String, u64, String)>> =
+            BTreeMap::new();
+        for (dest, to, there, here) in &wanted {
+            let result: anyhow::Result<()> = async {
+                let Some(version) = latest_enabled(self.store, here).await? else {
+                    println!("{dest}: {here} has no value yet; not delivered");
+                    return Ok(());
+                };
+                if !remotes.contains_key(*to) {
+                    let r = self.remote(to).await?;
+                    remotes.insert((*to).clone(), r);
+                }
+                let remote_at = remotes[*to].get(&there.to_ascii_uppercase());
+                let meta = self.store.get(here).await?.unwrap_or_default();
+                let rec = deliveries(&meta).remove(*dest);
+                let same = rec
+                    .as_ref()
+                    .filter(|r| r.github == **to && r.name.eq_ignore_ascii_case(there));
+                let note = match (same, remote_at) {
+                    (Some(r), Some(at)) if r.version == version && *at == r.updated_at => {
+                        return Ok(())
+                    }
+                    (Some(r), Some(at)) if *at != r.updated_at => {
+                        format!(" (it was changed on GitHub at {at}; overwriting)")
+                    }
+                    (Some(r), None) if r.version == version => {
+                        " (it was missing on GitHub; writing it again)".to_owned()
+                    }
+                    (None, Some(_)) => {
+                        " (it was already on GitHub, not written by tegata; overwriting)".to_owned()
+                    }
+                    _ => String::new(),
+                };
+                if dry_run {
+                    println!("would deliver {here} v{version} to {to} as {there}{note}");
+                    return Ok(());
+                }
+                let value = self
+                    .store
+                    .access(here, Some(version))
+                    .await?
+                    .ok_or_else(|| anyhow::anyhow!("cannot read {here} v{version}"))?;
+                Github::new(&self.github, to).put(there, &value).await?;
+                println!("delivered {here} v{version} to {to} as {there}{note}");
+                written.entry((*to).clone()).or_default().push((
+                    dest.to_string(),
+                    here.clone(),
+                    version,
+                    there.clone(),
+                ));
+                Ok(())
+            }
+            .await;
+            if let Err(e) = result {
+                eprintln!("error: {dest}: {here}: {e:#}");
+                failed.push(format!("{dest}/{there}"));
+            }
+        }
+        // 書いたあとの時刻を記録する（あとで、GitHub で書き換えられたかを見分けるため）。
+        // 届け先の場所か名前を替えたなら、前の場所のものを消す（ほかの届け先が使っていなければ）
+        let in_use: BTreeSet<(&GithubDestination, String)> = wanted
+            .iter()
+            .map(|(_, to, there, _)| (*to, there.to_ascii_uppercase()))
+            .collect();
+        for (to, items) in written {
+            let result: anyhow::Result<()> = async {
+                let remote = self.remote(&to).await?;
+                for (dest, here, version, there) in items {
+                    let updated_at = remote
+                        .get(&there.to_ascii_uppercase())
+                        .ok_or_else(|| {
+                            anyhow::anyhow!("{there} is not on {to} right after writing it")
+                        })?
+                        .clone();
+                    let meta = self.store.get(&here).await?.unwrap_or_default();
+                    if let Some(prev) = deliveries(&meta).remove(&dest) {
+                        let moved = prev.github != to || !prev.name.eq_ignore_ascii_case(&there);
+                        if moved
+                            && !in_use.contains(&(&prev.github, prev.name.to_ascii_uppercase()))
+                        {
+                            Github::new(&self.github, &prev.github)
+                                .delete(&prev.name)
+                                .await?;
+                            println!(
+                                "removed {} from {} (destination {dest} moved)",
+                                prev.name, prev.github
+                            );
+                        }
+                    }
+                    self.update_deliveries(&here, |d| {
+                        d.insert(
+                            dest.clone(),
+                            Delivered {
+                                version,
+                                github: to.clone(),
+                                name: there.clone(),
+                                updated_at,
+                            },
+                        );
+                    })
+                    .await?;
+                }
+                Ok(())
+            }
+            .await;
+            if let Err(e) = result {
+                eprintln!("error: {to}: could not record the deliveries: {e:#}");
+                failed.push(to.to_string());
+            }
+        }
+        if cleanup {
+            if let Err(e) = self.remove_undelivered(&wanted, dry_run).await {
+                eprintln!("error: removing from destinations: {e:#}");
+                failed.push("removing".to_owned());
+            }
+        }
+        anyhow::ensure!(failed.is_empty(), "not delivered: {}", failed.join(", "));
+        Ok(())
+    }
+
+    /// 設定から外した届け先・秘密のうち、tegata が届けたものを消す
+    async fn remove_undelivered(&self, wanted: &[Wanted<'a>], dry_run: bool) -> anyhow::Result<()> {
+        let keep: BTreeSet<(&str, &GithubDestination, String, &str)> = wanted
+            .iter()
+            .map(|(d, to, there, here)| (*d, *to, there.to_ascii_uppercase(), here.as_str()))
+            .collect();
+        // 同じ場所・同じ名前を、別の届け先がまだ使っているなら、GitHub からは消さない（記録だけ消す）
+        let in_use: BTreeSet<(&GithubDestination, String)> = wanted
+            .iter()
+            .map(|(_, to, there, _)| (*to, there.to_ascii_uppercase()))
+            .collect();
+        for (secret, meta) in self.store.list().await? {
+            if meta.labels.get(MANAGED_BY).map(String::as_str) != Some("tegata") {
+                continue;
+            }
+            let stale: Vec<(String, Delivered)> = deliveries(&meta)
+                .into_iter()
+                .filter(|(d, r)| {
+                    !keep.contains(&(
+                        d.as_str(),
+                        &r.github,
+                        r.name.to_ascii_uppercase(),
+                        secret.as_str(),
+                    ))
+                })
+                .collect();
+            for (dest, r) in stale {
+                let used = in_use.contains(&(&r.github, r.name.to_ascii_uppercase()));
+                if dry_run {
+                    if !used {
+                        println!(
+                            "would remove {} from {} ({secret}, destination {dest})",
+                            r.name, r.github
+                        );
+                    }
+                    continue;
+                }
+                if !used {
+                    Github::new(&self.github, &r.github).delete(&r.name).await?;
+                    println!(
+                        "removed {} from {} ({secret}, destination {dest})",
+                        r.name, r.github
+                    );
+                }
+                self.update_deliveries(&secret, |d| {
+                    d.remove(&dest);
+                })
+                .await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn update_deliveries(
+        &self,
+        secret: &str,
+        change: impl FnOnce(&mut crate::deliver::Deliveries),
+    ) -> anyhow::Result<()> {
+        let mut meta = self
+            .store
+            .get(secret)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("secret {secret} does not exist"))?;
+        let mut d = deliveries(&meta);
+        change(&mut d);
+        if d.is_empty() {
+            meta.annotations.remove(crate::deliver::ANNOTATION);
+        } else {
+            meta.annotations.insert(
+                crate::deliver::ANNOTATION.to_owned(),
+                serde_json::to_string(&d)?,
+            );
+        }
+        self.store.update_meta(secret, &meta).await
+    }
+
+    /// 届け先ごとの状態（status の後半）
+    async fn destinations_status(&self) -> anyhow::Result<()> {
+        let wanted = self.wanted();
+        let mut listed: BTreeMap<GithubDestination, anyhow::Result<BTreeMap<String, String>>> =
+            BTreeMap::new();
+        for (dest, d) in &self.loaded.config.destinations {
+            if !listed.contains_key(&d.github) {
+                listed.insert(d.github.clone(), self.remote(&d.github).await);
+            }
+            println!("destination {dest} ({})", d.github);
+            let remote = match &listed[&d.github] {
+                Ok(r) => r,
+                Err(e) => {
+                    println!("  cannot read: {e:#}");
+                    continue;
+                }
+            };
+            for (_, _, there, here) in wanted.iter().filter(|w| w.0 == dest) {
+                let latest = latest_enabled(self.store, here).await?;
+                let meta = self.store.get(here).await?.unwrap_or_default();
+                let rec = deliveries(&meta)
+                    .remove(dest.as_str())
+                    .filter(|r| r.github == d.github && r.name.eq_ignore_ascii_case(there));
+                let at = remote.get(&there.to_ascii_uppercase());
+                let state = match (latest, rec, at) {
+                    (None, _, _) => format!("{here} has no value yet"),
+                    (_, Some(r), Some(at)) if *at != r.updated_at => {
+                        format!(
+                            "changed on GitHub at {at} (apply writes v{} again)",
+                            latest.unwrap_or(r.version)
+                        )
+                    }
+                    (_, Some(_), None) => "missing on GitHub (apply writes it again)".to_owned(),
+                    (Some(v), Some(r), Some(_)) if r.version == v => format!("v{v}"),
+                    (Some(v), Some(r), Some(_)) => {
+                        format!("v{} (the store has v{v}; apply delivers it)", r.version)
+                    }
+                    (Some(_), None, Some(_)) => {
+                        "on GitHub, not written by tegata (apply overwrites it)".to_owned()
+                    }
+                    (Some(_), None, None) => "not delivered yet".to_owned(),
+                };
+                let from = if there == here {
+                    String::new()
+                } else {
+                    format!(" (from {here})")
+                };
+                println!("  {there:<32} {state}{from}");
+            }
+            let mine: BTreeSet<String> = wanted
+                .iter()
+                .filter(|w| *w.1 == d.github)
+                .map(|w| w.2.to_ascii_uppercase())
+                .collect();
+            let others: Vec<&str> = remote
+                .keys()
+                .filter(|n| !mine.contains(*n))
+                .map(String::as_str)
+                .collect();
+            if !others.is_empty() {
+                println!(
+                    "  other secrets there (not managed here): {}",
+                    others.join(", ")
+                );
+            }
+            // Environment の値は、同じ名前のリポジトリの値より勝つ
+            if d.github.environment.is_some() {
+                let repo = GithubDestination {
+                    repo: d.github.repo.clone(),
+                    environment: None,
+                };
+                if let Ok(at_repo) = self.remote(&repo).await {
+                    let shadowed: Vec<&str> = mine
+                        .iter()
+                        .filter(|n| at_repo.contains_key(*n))
+                        .map(String::as_str)
+                        .collect();
+                    if !shadowed.is_empty() {
+                        println!(
+                            "  also repository secrets of {} (this environment's values win): {}",
+                            repo.repo,
+                            shadowed.join(", ")
+                        );
+                    }
+                }
+            }
+        }
+        // 設定から外したもので、まだ届け先に残っているもの
+        let keep: BTreeSet<(&str, &GithubDestination, String)> = wanted
+            .iter()
+            .map(|(d, to, there, _)| (*d, *to, there.to_ascii_uppercase()))
+            .collect();
+        for (secret, meta) in self.store.list().await? {
+            for (dest, r) in deliveries(&meta) {
+                if !keep.contains(&(dest.as_str(), &r.github, r.name.to_ascii_uppercase())) {
+                    println!(
+                        "no longer in the config: {} on {} ({secret}, destination {dest}; apply removes it)",
+                        r.name, r.github
+                    );
+                }
+            }
+        }
         Ok(())
     }
 
@@ -664,6 +1012,6 @@ impl<'a> Engine<'a> {
                 );
             }
         }
-        Ok(())
+        self.destinations_status().await
     }
 }
