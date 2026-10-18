@@ -37,6 +37,14 @@ Environment variables: see [the configuration reference](configuration.md#enviro
 
 `render` exits 0 even when some names stay unfilled; it lists them instead.
 
+After an error, a `see:` line names the page that helps: the failed command's section of this reference, or the [configuration reference](configuration.md) when `tegata.yaml` cannot be read or is invalid. `tegata --help` lists the main pages, and `tegata <command> --help` ends with the link to that command's section.
+
+```text
+$ tegata settle admin_password
+error: admin_password has no previous
+see: https://github.com/k-kawa/tegata/blob/main/docs/reference/commands.md#tegata-settle
+```
+
 ## Files
 
 | File | Written by | Description |
