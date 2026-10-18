@@ -298,7 +298,12 @@ async fn installs_from_github_releases() {
     use axum::http::{HeaderMap, StatusCode};
     use axum::routing::get;
 
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
     use_cache();
+    let api_calls = Arc::new(AtomicUsize::new(0));
+    let downloads = Arc::new(AtomicUsize::new(0));
     let files = tempfile::tempdir().unwrap();
     let key = minisign::KeyPair::generate_unencrypted_keypair().unwrap();
     for v in ["0.9.0", "1.0.0"] {
@@ -311,6 +316,9 @@ async fn installs_from_github_releases() {
     struct App {
         base: String,
         files: std::path::PathBuf,
+        /// requests to the API (`/repos/…`), which has a low rate limit without a token
+        api_calls: Arc<AtomicUsize>,
+        downloads: Arc<AtomicUsize>,
     }
     fn authorized(headers: &HeaderMap) -> Result<(), StatusCode> {
         match headers.get("authorization").and_then(|v| v.to_str().ok()) {
@@ -321,8 +329,11 @@ async fn installs_from_github_releases() {
     let app = axum::Router::new()
         .route(
             "/repos/example/gh/releases",
-            get(|headers: HeaderMap| async move {
-                authorized(&headers)?;
+            get(|State(app): State<App>, headers: HeaderMap| async move {
+                app.api_calls.fetch_add(1, Ordering::SeqCst);
+                if headers.contains_key("authorization") {
+                    authorized(&headers)?;
+                }
                 Ok::<_, StatusCode>(axum::Json(serde_json::json!([
                     { "tag_name": "v1.0.0" },
                     { "tag_name": "v0.9.0" },
@@ -335,6 +346,7 @@ async fn installs_from_github_releases() {
             "/repos/example/gh/releases/tags/{tag}",
             get(
                 |State(app): State<App>, UrlPath(tag): UrlPath<String>, headers: HeaderMap| async move {
+                    app.api_calls.fetch_add(1, Ordering::SeqCst);
                     authorized(&headers)?;
                     let version = tag.strip_prefix('v').ok_or(StatusCode::NOT_FOUND)?;
                     let dir = app.files.join(version);
@@ -372,15 +384,27 @@ async fn installs_from_github_releases() {
                 },
             ),
         )
+        // the public download URLs (no token, not the API)
+        .route(
+            "/example/gh/releases/download/{tag}/{name}",
+            get(
+                |State(app): State<App>, UrlPath((tag, name)): UrlPath<(String, String)>| async move {
+                    app.downloads.fetch_add(1, Ordering::SeqCst);
+                    let version = tag.strip_prefix('v').ok_or(StatusCode::NOT_FOUND)?;
+                    std::fs::read(app.files.join(version).join(name))
+                        .map_err(|_| StatusCode::NOT_FOUND)
+                },
+            ),
+        )
         .with_state(App {
             base: base.clone(),
             files: files.path().to_owned(),
+            api_calls: api_calls.clone(),
+            downloads: downloads.clone(),
         });
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
 
-    std::env::set_var("TEGATA_GITHUB_API", &base);
-    std::env::set_var("GITHUB_TOKEN", "test-token");
-    let github = install::GitHub::new();
+    let github = install::GitHub::with(base.clone(), base.clone(), Some("test-token".to_owned()));
     let work = tempfile::tempdir().unwrap();
     let loaded = config(
         work.path(),
@@ -397,4 +421,28 @@ async fn installs_from_github_releases() {
     let p = &loaded.config.providers["hello"];
     let path = install::installed(&loaded, "hello", p).unwrap();
     assert_eq!(std::fs::read_to_string(path).unwrap(), SCRIPT);
+    // the list of releases and the release itself, once each (not once per file)
+    assert_eq!(api_calls.load(Ordering::SeqCst), 2);
+
+    // without a token: only the list of releases uses the API; files come from the download URLs
+    api_calls.store(0, Ordering::SeqCst);
+    let github = install::GitHub::with(base.clone(), base.clone(), None);
+    let work = tempfile::tempdir().unwrap();
+    let loaded = config(
+        work.path(),
+        &format!(
+            "  hello:\n    source: github.com/example/gh\n    version: \"*\"\n    public_key: {}\n",
+            key.pk.to_base64()
+        ),
+    );
+    install::init(&loaded, false, &github).await.unwrap();
+    assert_eq!(api_calls.load(Ordering::SeqCst), 1);
+    assert!(
+        downloads.load(Ordering::SeqCst) >= 2,
+        "SHA256SUMS and its signature"
+    );
+    // with the version locked, no API request at all
+    let github = install::GitHub::with(base.clone(), base, None);
+    install::init(&loaded, false, &github).await.unwrap();
+    assert_eq!(api_calls.load(Ordering::SeqCst), 1);
 }

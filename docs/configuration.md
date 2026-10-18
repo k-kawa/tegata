@@ -240,8 +240,9 @@ Written by `tegata init` next to the YAML file, and meant to be committed. For e
 | `TEGATA_GCP_ACCESS_TOKEN` | An OAuth access token for Secret Manager (and for the `gcp` provider) |
 | `TEGATA_CACHE_DIR` | Where `tegata init` installs providers (default `$XDG_CACHE_HOME/tegata`, or `~/.cache/tegata`) |
 | `TEGATA_PROVIDER_MIRROR` | Install providers from a local directory, laid out as `<dir>/<source>/<version>/<file>` |
-| `GITHUB_TOKEN` | Sent to GitHub by `tegata init` (private repositories, higher rate limits) |
+| `GITHUB_TOKEN` | Sent to GitHub by `tegata init` (optional; needed for private repositories). Without it, only the list of releases uses the API, and files come from the public download URLs |
 | `TEGATA_GITHUB_TOKEN` | The token for writing GitHub Actions secrets ([destinations](#destinations)); without it, `gh auth token` |
 | `TEGATA_GITHUB_API` | The GitHub API URL, for `tegata init` and destinations (default `https://api.github.com`) |
+| `TEGATA_GITHUB_DOWNLOAD` | The base of the public download URLs for `tegata init` (default `https://github.com`) |
 
 Variables named in `credentials` are read too. Variables that only tests use (to point tegata and the providers at fake servers) are listed in the source code and are not part of the interface.

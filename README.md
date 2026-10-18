@@ -154,8 +154,9 @@ Commit `tegata.lock`. Other machines that run `tegata init` then get the same fi
 | --- | --- |
 | `TEGATA_CACHE_DIR` | Where providers are installed (default: `$XDG_CACHE_HOME/tegata`, or `~/.cache/tegata`) |
 | `TEGATA_PROVIDER_MIRROR` | Install from a local directory instead of GitHub, laid out as `<dir>/<source>/<version>/<file>` (for machines without internet access) |
-| `GITHUB_TOKEN` | Sent to GitHub, for private repositories and higher rate limits (optional) |
+| `GITHUB_TOKEN` | Sent to GitHub (optional). Needed for private repositories. Without it, tegata init uses the API only for the list of releases and downloads files from the public download URLs, which keeps it well under GitHub's limit for unauthenticated requests |
 | `TEGATA_GITHUB_API` | The GitHub API URL (default `https://api.github.com`) |
+| `TEGATA_GITHUB_DOWNLOAD` | The base of the public download URLs (default `https://github.com`) |
 
 Publishing your own provider: see [releasing](docs/releasing.md).
 
@@ -164,7 +165,7 @@ Publishing your own provider: see [releasing](docs/releasing.md).
 Prebuilt binaries for Linux (x86_64, aarch64; static, no dependencies) and macOS (x86_64, Apple Silicon) are on the [releases page](https://github.com/k-kawa/tegata/releases), named `tegata_<version>_<os>_<arch>`. Each release has a `SHA256SUMS` signed with the [release signing key](SECURITY.md#release-signing-key), and GitHub [artifact attestations](https://docs.github.com/en/actions/concepts/security/artifact-attestations) that show the files were built by this repository's release workflow:
 
 ```sh
-v=0.1.0 p=linux_x86_64
+v=0.1.1 p=linux_x86_64
 gh release download v$v -R k-kawa/tegata -p "tegata_${v}_${p}" -p SHA256SUMS -p SHA256SUMS.minisig
 minisign -V -P RWS+RgaPKYHijXCDQ/JCehzLyohjXERYxShqSb6lS71/MHaCS3agTxkB -m SHA256SUMS
 grep " tegata_${v}_${p}$" SHA256SUMS | shasum -a 256 -c
