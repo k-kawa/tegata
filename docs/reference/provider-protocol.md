@@ -2,11 +2,11 @@
 
 A provider is an executable that creates, reads, and deletes one kind of secret for tegata. tegata starts the executable once per operation, writes one JSON object to its standard input, and reads one JSON object from its standard output. Standard error is shown to the user as is, so a provider can print progress there (never values).
 
-Providers can be written in any language. Rust providers can use the [`tegata-plugin`](../crates/tegata-plugin) crate for the types and a small helper.
+Providers can be written in any language. Rust providers can use the [`tegata-plugin`](../../crates/tegata-plugin) crate for the types and a small helper.
 
 ## Finding the executable
 
-A provider is either installed by `tegata init` from a `source` (see [Installing providers](../README.md#installing-providers) and [releasing](releasing.md)), or a `command`:
+A provider is either installed by `tegata init` from a `source` (see [Installing providers](../../README.md#installing-providers) and [publishing providers](../guides/publishing-providers.md)), or a `command`:
 
 ```yaml
 providers:

@@ -10,7 +10,7 @@ resources: { ... }  # what to create (required)
 destinations: { ... } # where copies of secrets are written, such as GitHub Actions secrets (optional)
 ```
 
-A complete example that runs without a cloud account is in [examples/minimal](../examples/minimal).
+A complete example that runs without a cloud account is in [examples/minimal](../../examples/minimal).
 
 ## `store`
 
@@ -92,7 +92,7 @@ providers:
 | Key | Description |
 | --- | --- |
 | `command` | The executable. With a `/`, a path relative to the YAML file; otherwise looked up in `PATH`, then next to the `tegata` executable. Set either `command` or `source` |
-| `source` | A GitHub repository whose releases hold the provider, `github.com/<owner>/<repo>`. Installed by `tegata init` (see [Installing providers](../README.md#installing-providers)) |
+| `source` | A GitHub repository whose releases hold the provider, `github.com/<owner>/<repo>`. Installed by `tegata init` (see [Installing providers](../../README.md#installing-providers)) |
 | `version` | With `source` (required): a version requirement in Cargo syntax, such as `^1.2`, `~1.2.3`, `=1.2.3`, `>=1, <2`, or `*`. A bare `1.2` means `^1.2` |
 | `public_key` | With `source`: the minisign public key that signs its releases. Not needed for `github.com/k-kawa/tegata`, whose key is built in |
 | `config` | Settings passed to every operation as `provider_config` (account IDs and the like; never secrets). See [providers](providers.md) for what each provider takes |
@@ -129,7 +129,7 @@ The resource's name (`session_key`) may use lowercase letters, digits, `-`, and 
 | `type` | The provider's resource type (`api_token`, ...). Leave it out for the built-in providers |
 | `config` | Settings for this resource, passed to the provider as `config` |
 | `secrets` | Secret name → the provider output stored in it. At least one |
-| `previous` | Optional. A secret that keeps the value before the last rotation, so services can accept both the old and the new value for a while (see [Rotation](#rotation)). It holds the value of the resource's first secret by name order |
+| `previous` | Optional. A secret that keeps the value before the last rotation, so services can accept both the old and the new value for a while (see [Rotating secrets](../guides/rotating-secrets.md#keys-your-service-checks-rotate-settle-prune)). It holds the value of the resource's first secret by name order |
 
 Secret names may use letters, digits, `-`, and `_`, up to 255 characters. To use a secret in a template, its name must start with an uppercase letter and contain only uppercase letters, digits, and `_` (for example `SESSION_KEY`). Each secret belongs to exactly one resource.
 
@@ -209,28 +209,13 @@ Each time a managed resource makes new values, the values form a **generation**:
 | `prune [<resource>]` | For every generation older than the latest: asks the provider to delete what it made (an API token, an access key), then disables that generation's versions. Also disables older versions of `previous`. Versions are disabled, never destroyed, so they can be enabled again in the store if needed |
 | `set <resource>` | Puts a value by hand as a new generation. Generations put by hand (or by `import`) for an external provider are not deleted by `prune`, since tegata did not make them; prune tells you to clean them up by hand |
 
-A typical rotation of a key that services check against both the current and the previous value:
-
-```sh
-tegata rotate session_key   # SESSION_KEY: new value; PREVIOUS_SESSION_KEY: the old one
-# render on the servers and restart the services: they accept both values
-tegata settle session_key   # PREVIOUS_SESSION_KEY: the new value too; the old one is no longer accepted
-tegata prune session_key    # disable the old versions
-```
-
-A rotation of an API token that is replaced at once:
-
-```sh
-tegata rotate releases_read # a second token exists; the old one still works
-# render on the servers and restart the services
-tegata prune releases_read  # delete the old token on the provider
-```
+The steps of a rotation, for each kind of value: [Rotating secrets](../guides/rotating-secrets.md).
 
 **Values that stop working at once.** Some providers declare types that can hold only one value (a database user's password, a Cloudflare Tunnel's secret): making a new one breaks the old value immediately. Before `apply` or `rotate` makes such a value, tegata shows what will break and who reads it, and asks you to type `yes`. `--yes` skips the question (for scripts); `--dry-run` only shows what would be made. Outside a terminal, without `--yes`, tegata refuses.
 
 ## `tegata.lock`
 
-Written by `tegata init` next to the YAML file, and meant to be committed. For each provider with a `source`, it records the chosen version, the version requirement it was chosen for, the public key that signed it, and the SHA-256 of the executable for every platform in the release. See [Installing providers](../README.md#installing-providers).
+Written by `tegata init` next to the YAML file, and meant to be committed. For each provider with a `source`, it records the chosen version, the version requirement it was chosen for, the public key that signed it, and the SHA-256 of the executable for every platform in the release. See [Installing providers](../../README.md#installing-providers).
 
 ## Environment variables
 

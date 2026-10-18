@@ -3,7 +3,7 @@
 //! tegata starts a provider's executable once per operation, writes one [`Request`] to its
 //! standard input, and reads one [`Response`] from its standard output. Standard error is shown to
 //! the user as is (never write secret values there). The protocol is described in
-//! `docs/provider-protocol.md`.
+//! `docs/reference/provider-protocol.md`.
 //!
 //! A provider implements [`Provider`] and calls [`run`] from `main`:
 //!

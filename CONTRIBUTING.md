@@ -6,7 +6,7 @@ Thanks for your interest in tegata.
 
 - For anything larger than a small fix, please open an issue first, so we can agree on the approach.
 - Security issues: see [SECURITY.md](SECURITY.md). Do not open a public issue.
-- New providers do not have to live in this repository: the [provider protocol](docs/provider-protocol.md) lets you publish a provider from your own repository. Providers in this repository are the ones the maintainers can test and support.
+- New providers do not have to live in this repository: the [provider protocol](docs/reference/provider-protocol.md) lets you publish a provider from your own repository. Providers in this repository are the ones the maintainers can test and support.
 
 ## Development
 
