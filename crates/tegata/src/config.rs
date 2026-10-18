@@ -56,8 +56,20 @@ pub struct Role {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProviderConfig {
-    /// 実行ファイル（`/` を含めばこの YAML からの相対、なければ PATH と tegata の隣）
-    pub command: String,
+    /// The executable (relative to this YAML if it has a `/`, otherwise looked up in PATH and next
+    /// to tegata). Set this or `source`
+    #[serde(default)]
+    pub command: Option<String>,
+    /// A GitHub repository whose releases hold the provider (`github.com/<owner>/<repo>`),
+    /// installed by `tegata init`. Set this or `command`
+    #[serde(default)]
+    pub source: Option<String>,
+    /// The version requirement for `source` (Cargo syntax: `0.3`, `^1.2`, `~1.2.3`, `=1.2.3`)
+    #[serde(default)]
+    pub version: Option<String>,
+    /// The minisign public key that signs `source`'s releases (not needed for the official source)
+    #[serde(default)]
+    pub public_key: Option<String>,
     #[serde(default)]
     pub config: serde_json::Value,
     #[serde(default)]
@@ -141,6 +153,29 @@ impl Loaded {
             store.gcp.is_some() != store.local.is_some(),
             "store: set exactly one of gcp and local"
         );
+        for (name, p) in &self.config.providers {
+            match (&p.command, &p.source) {
+                (Some(_), None) => anyhow::ensure!(
+                    p.version.is_none() && p.public_key.is_none(),
+                    "provider {name}: version and public_key go with source, not command"
+                ),
+                (None, Some(source)) => {
+                    anyhow::ensure!(
+                        source
+                            .strip_prefix("github.com/")
+                            .is_some_and(|r| r.split('/').count() == 2),
+                        "provider {name}: source looks like github.com/<owner>/<repo>"
+                    );
+                    let version = p.version.as_deref().ok_or_else(|| {
+                        anyhow::anyhow!("provider {name}: set version with source")
+                    })?;
+                    semver::VersionReq::parse(version).map_err(|e| {
+                        anyhow::anyhow!("provider {name}: version {version:?}: {e}")
+                    })?;
+                }
+                _ => anyhow::bail!("provider {name}: set exactly one of command and source"),
+            }
+        }
         let mut owner: BTreeMap<String, &str> = BTreeMap::new();
         for (name, res) in &self.config.resources {
             anyhow::ensure!(

@@ -6,12 +6,12 @@ Providers can be written in any language. Rust providers can use the [`tegata-pl
 
 ## Finding the executable
 
-A provider is configured in the YAML:
+A provider is either installed by `tegata init` from a `source` (see [Installing providers](../README.md#installing-providers) and [releasing](releasing.md)), or a `command`:
 
 ```yaml
 providers:
   cloudflare:
-    command: tegata-provider-cloudflare   # looked up in PATH, then next to the tegata executable
+    command: tegata-provider-cloudflare   # relative to the YAML if it has a `/`; otherwise PATH, then next to tegata
     config: { account_id: 0123456789abcdef }
     credentials:
       api_token: { env: TEGATA_CLOUDFLARE_TOKEN, optional: true }

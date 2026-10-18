@@ -237,7 +237,10 @@ impl<'a> Providers<'a> {
     }
 
     fn command(&self, provider: &str) -> anyhow::Result<PathBuf> {
-        let cmd = &self.loaded.config.providers[provider].command;
+        let p = &self.loaded.config.providers[provider];
+        let Some(cmd) = &p.command else {
+            return crate::install::installed(self.loaded, provider, p);
+        };
         if cmd.contains('/') {
             return Ok(self.loaded.path(cmd));
         }

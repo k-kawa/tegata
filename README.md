@@ -33,7 +33,8 @@ roles:                             # who reads what: decided by the names in the
 
 providers:                         # external providers (random, manual and value are built in)
   cloudflare:
-    command: tegata-provider-cloudflare
+    source: github.com/k-kawa/tegata # installed by `tegata init`
+    version: "^0.1"
     config: { account_id: 0123456789abcdef }
     credentials:                   # never write secrets in the YAML
       api_token: { env: TEGATA_CLOUDFLARE_TOKEN }
@@ -66,6 +67,7 @@ RELEASES_SECRET_ACCESS_KEY=__RELEASES_SECRET_ACCESS_KEY__
 ```
 
 ```sh
+tegata init                  # install the providers, pinned in tegata.lock
 tegata check                 # names in templates vs. resources, providers
 tegata apply                 # containers, read access, missing values
 tegata status                # generations, enabled versions, readers
@@ -87,6 +89,7 @@ tegata prune session_key     # disable the old versions
 
 | Command | What it does |
 | --- | --- |
+| `tegata init [--upgrade]` | Installs the providers that have a `source`, and writes `tegata.lock`. See [Installing providers](#installing-providers) |
 | `tegata check` | Checks the configuration, the providers, and that every `__NAME__` in the templates is made by some resource |
 | `tegata status` | Shows each resource and secret: generations, enabled versions, which roles read it. Also lists tegata secrets that are no longer in the YAML |
 | `tegata apply [--yes \| --dry-run]` | Creates secret containers, labels and read access; creates values that do not exist yet; re-reads `data` resources |
@@ -116,16 +119,52 @@ The configuration file is `tegata.yaml`, or `-f <file>` / `TEGATA_FILE`.
 
 Writing a provider: see [the provider protocol](docs/provider-protocol.md).
 
+### Installing providers
+
+A provider is either a `command` you installed yourself, or a `source` that `tegata init` installs from GitHub releases:
+
+```yaml
+providers:
+  cloudflare:
+    source: github.com/k-kawa/tegata   # a GitHub repository
+    version: "^0.1"                    # a version requirement (Cargo syntax: ^1.2, ~1.2, >=1, 1.2.3, *)
+  example:
+    source: github.com/someone/tegata-provider-example
+    version: "1"
+    public_key: "RWQ…"                 # the minisign public key its author publishes
+  local:
+    command: ./bin/my-provider          # relative to this YAML if it has a `/`, otherwise from PATH
+```
+
+> The official provider releases are not published yet. Until then, build the providers yourself and use `command`, or publish them from your own repository with your own key. The official releases will be signed with the key in [SECURITY.md](SECURITY.md#release-signing-key), which tegata has built in.
+
+`tegata init`:
+
+1. picks the newest release that matches `version` (or keeps the one in `tegata.lock`),
+2. downloads `SHA256SUMS` and checks its minisign signature with `public_key` (for `github.com/k-kawa/tegata`, the [official key](SECURITY.md#release-signing-key) built into tegata),
+3. downloads the executable for this machine and checks it against `SHA256SUMS`,
+4. records the version and the SHA-256 for every platform in `tegata.lock`.
+
+Commit `tegata.lock`. Other machines that run `tegata init` then get the same files, checked against the lock, and tegata refuses a release whose files changed after you locked it. `tegata init --upgrade` moves to the newest matching versions. Other commands use only installed providers that match the lock; if anything is missing or changed, they ask you to run `tegata init`. `tegata render` never runs providers, so servers that only render need no `init`.
+
+| Environment variable | Use |
+| --- | --- |
+| `TEGATA_CACHE_DIR` | Where providers are installed (default: `$XDG_CACHE_HOME/tegata`, or `~/.cache/tegata`) |
+| `TEGATA_PROVIDER_MIRROR` | Install from a local directory instead of GitHub, laid out as `<dir>/<source>/<version>/<file>` (for machines without internet access) |
+| `GITHUB_TOKEN` | Sent to GitHub, for private repositories and higher rate limits (optional) |
+| `TEGATA_GITHUB_API` | The GitHub API URL (default `https://api.github.com`) |
+
+Publishing your own provider: see [releasing](docs/releasing.md).
+
 ## Install
 
 Build from source (Rust 1.87 or later):
 
 ```sh
 cargo install --path crates/tegata
-cargo install --path crates/tegata-provider-cloudflare   # and any other providers you use
 ```
 
-Prebuilt binaries and `tegata init` (install the providers a configuration needs, pinned by a lock file, like `terraform init`) are planned.
+Then let `tegata init` install the providers (see [Installing providers](#installing-providers)), or `cargo install` them too. Prebuilt binaries of tegata itself are planned.
 
 ## License
 

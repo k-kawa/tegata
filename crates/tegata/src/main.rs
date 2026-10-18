@@ -7,7 +7,11 @@ use tegata::config::Loaded;
 use tegata::engine::{Approval, Engine};
 
 #[derive(Parser)]
-#[command(name = "tegata", version, about = "Create, store, rotate, and fill in secrets")]
+#[command(
+    name = "tegata",
+    version,
+    about = "Create, store, rotate, and fill in secrets"
+)]
 struct Cli {
     /// The configuration file (YAML)
     #[arg(
@@ -24,6 +28,12 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Install the providers that have a `source`, and write tegata.lock
+    Init {
+        /// Choose the newest versions the requirements allow, instead of the locked ones
+        #[arg(long)]
+        upgrade: bool,
+    },
     /// Check the configuration, providers, and the names used in templates
     Check,
     /// Show each resource and secret: generations, enabled versions, readers
@@ -116,6 +126,25 @@ async fn run() -> anyhow::Result<()> {
         return Ok(());
     }
     let loaded = Loaded::load(&cli.file)?;
+    if let Command::Init { upgrade } = &cli.command {
+        // TEGATA_PROVIDER_MIRROR: a local copy of releases, for machines without internet access
+        let lines = match std::env::var_os("TEGATA_PROVIDER_MIRROR") {
+            Some(dir) => {
+                let mirror = tegata::install::Mirror(dir.into());
+                tegata::install::init(&loaded, *upgrade, &mirror).await?
+            }
+            None => {
+                tegata::install::init(&loaded, *upgrade, &tegata::install::GitHub::new()).await?
+            }
+        };
+        for line in &lines {
+            println!("{line}");
+        }
+        if lines.is_empty() {
+            println!("no providers with a source");
+        }
+        return Ok(());
+    }
     let store = tegata::open_store(&loaded).await?;
     let engine = Engine::new(&loaded, store.as_ref());
     match cli.command {
@@ -142,7 +171,7 @@ async fn run() -> anyhow::Result<()> {
         Command::Settle { resources } => engine.settle(&resources).await?,
         Command::Prune { resources } => engine.prune(&resources).await?,
         Command::Import { role, dir } => engine.import(&role, &dir).await?,
-        Command::Render { .. } => unreachable!("handled above"),
+        Command::Render { .. } | Command::Init { .. } => unreachable!("handled above"),
     }
     Ok(())
 }
