@@ -27,4 +27,4 @@ Documentation, CLI help, error messages, commits, issues, and pull requests are 
 
 ## License
 
-By contributing, you agree that your contributions are licensed under the [Apache License 2.0](LICENSE).
+tegata is licensed under the [Functional Source License, Version 1.1, ALv2 Future License](LICENSE.md) (FSL-1.1-ALv2). By contributing, you agree that your contributions are licensed under the same terms, including the grant of the Apache License 2.0 two years after each release.

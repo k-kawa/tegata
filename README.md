@@ -129,4 +129,8 @@ Prebuilt binaries and `tegata init` (install the providers a configuration needs
 
 ## License
 
-Apache License 2.0. See [LICENSE](LICENSE).
+[Functional Source License, Version 1.1, ALv2 Future License](LICENSE.md) (FSL-1.1-ALv2).
+
+In short: you can use, modify, and redistribute tegata for any purpose except offering it to others as a commercial product or service that competes with it. Using tegata inside your company, for your own infrastructure, or in professional services for your clients is fine. Each version becomes available under the Apache License 2.0 two years after it is released.
+
+FSL is a [Fair Source](https://fair.io) license, not an OSI-approved open source license. If your organization only allows OSI-approved licenses, check with them before using tegata.
