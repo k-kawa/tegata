@@ -186,6 +186,7 @@ All of it, by kind: [docs](docs/README.md).
 
 - Guides: [Getting started](docs/guides/getting-started.md), [Rotating secrets](docs/guides/rotating-secrets.md), [Publishing providers](docs/guides/publishing-providers.md)
 - Reference: [Commands](docs/reference/commands.md), [Configuration](docs/reference/configuration.md) (every key of `tegata.yaml`, templates, environment variables), [Providers](docs/reference/providers.md), [Provider protocol](docs/reference/provider-protocol.md)
+- [Changelog](CHANGELOG.md): what changed in each version, and how to move between versions
 - [Security policy](SECURITY.md): reporting vulnerabilities, the release signing key
 
 ## License

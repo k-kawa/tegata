@@ -32,12 +32,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Check that the tag matches the crate versions
+      - name: Check that the tag matches the crate versions and CHANGELOG.md has its notes
         run: |
           version=${GITHUB_REF_NAME#v}
           for f in crates/*/Cargo.toml; do
             grep -q "^version = \"$version\"$" "$f" || { echo "$f is not version $version" >&2; exit 1; }
           done
+          tools/release-notes.sh "$version" > /dev/null
           echo "VERSION=$version" >> "$GITHUB_ENV"
       - name: Install musl
         if: runner.os == 'Linux'
@@ -63,11 +64,17 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: dist-*
           merge-multiple: true
           path: dist
+      # The notes are this version's section of CHANGELOG.md; the workflow fails without one
+      - name: Release notes
+        run: tools/release-notes.sh "$GITHUB_REF_NAME" > notes.md
       - name: Make SHA256SUMS and a draft release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -76,6 +83,5 @@ jobs:
           sha256sum tegata* > SHA256SUMS
           cat SHA256SUMS
           gh release create "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" --draft --verify-tag \
-            --title "$GITHUB_REF_NAME" \
-            --notes "Not signed yet: the maintainer signs SHA256SUMS and publishes this release." \
+            --title "$GITHUB_REF_NAME" --notes-file ../notes.md \
             tegata* SHA256SUMS

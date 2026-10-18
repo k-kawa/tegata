@@ -23,3 +23,5 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked
+      # CHANGELOG.md has a section for the version in Cargo.toml (the release notes come from it)
+      - run: tools/release-notes.sh "$(awk -F'"' '/^version = /{ print $2; exit }' crates/tegata/Cargo.toml)" > /dev/null

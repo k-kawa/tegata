@@ -17,4 +17,4 @@ Everything, exactly.
 - [Providers](reference/providers.md): the providers in this repository, their settings, outputs, and rotation behavior
 - [Provider protocol](reference/provider-protocol.md): what a provider reads and writes, for writing your own
 
-See also: [Security policy](../SECURITY.md) (reporting vulnerabilities, the release signing key) and [Contributing](../CONTRIBUTING.md).
+See also: [Changelog](../CHANGELOG.md), [Security policy](../SECURITY.md) (reporting vulnerabilities, the release signing key) and [Contributing](../CONTRIBUTING.md).
