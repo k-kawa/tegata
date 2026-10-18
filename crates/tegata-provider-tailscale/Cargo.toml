@@ -1,6 +1,6 @@
 [package]
 name = "tegata-provider-tailscale"
-description = "tegata のプロバイダー：tailscale"
+description = "tegata provider for Tailscale: auth keys"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.87"

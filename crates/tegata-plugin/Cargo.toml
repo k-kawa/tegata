@@ -1,6 +1,6 @@
 [package]
 name = "tegata-plugin"
-description = "tegata とプロバイダーの約束（標準入出力の JSON）の型と、プロバイダーを書くための助け"
+description = "Types of the tegata provider protocol (JSON over stdin and stdout) and a helper for writing providers"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.87"

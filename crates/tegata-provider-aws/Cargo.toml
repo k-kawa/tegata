@@ -1,6 +1,6 @@
 [package]
 name = "tegata-provider-aws"
-description = "tegata のプロバイダー：AWS"
+description = "tegata provider for AWS: Amazon SES SMTP credentials"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.87"
@@ -10,7 +10,7 @@ publish = false
 [dependencies]
 anyhow = "1"
 async-trait = "0.1"
-# AWS の SDK。TLS の暗号は ring にし、aws-lc-rs（C）を引き込まない（このリポジトリの決まり）
+# The AWS SDK, with ring for TLS so that aws-lc-rs (C) is not pulled in (pure Rust is preferred)
 aws-config = { version = "1", default-features = false, features = ["rt-tokio", "credentials-process", "sso", "behavior-version-latest"] }
 aws-sdk-iam = { version = "1", default-features = false, features = ["rt-tokio", "behavior-version-latest"] }
 aws-smithy-http-client = { version = "1", default-features = false, features = ["rustls-ring"] }

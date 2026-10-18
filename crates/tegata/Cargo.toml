@@ -1,6 +1,6 @@
 [package]
 name = "tegata"
-description = "秘密を作り、置き、入れ替え、雛形を埋める道具"
+description = "Secrets lifecycle as code: create, store, rotate, and fill in secrets"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.87"

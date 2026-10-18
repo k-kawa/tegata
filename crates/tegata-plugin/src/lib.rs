@@ -1,92 +1,135 @@
-//! tegata とプロバイダーの約束
+//! The tegata provider protocol.
 //!
-//! tegata は、1 回の操作ごとにプロバイダーの実行ファイルを起動し、標準入力に [`Request`] を 1 つ渡し、
-//! 標準出力から [`Response`] を 1 つ受け取る。標準エラー出力は運営者に見せる（値を出さない）。
-//! プロバイダーは [`Provider`] を実装して [`run`] を呼べばよい
+//! tegata starts a provider's executable once per operation, writes one [`Request`] to its
+//! standard input, and reads one [`Response`] from its standard output. Standard error is shown to
+//! the user as is (never write secret values there). The protocol is described in
+//! `docs/provider-protocol.md`.
+//!
+//! A provider implements [`Provider`] and calls [`run`] from `main`:
+//!
+//! ```no_run
+//! use std::collections::BTreeMap;
+//!
+//! use tegata_plugin::{Created, Kind, Provider, Request};
+//!
+//! struct Example;
+//!
+//! #[async_trait::async_trait]
+//! impl Provider for Example {
+//!     fn describe(&self) -> BTreeMap<String, Kind> {
+//!         BTreeMap::from([("token".to_owned(), Kind::Managed)])
+//!     }
+//!
+//!     async fn create(&self, req: &Request) -> anyhow::Result<Created> {
+//!         let name = req.config_str("name")?;
+//!         // ... call the service's API with req.credential("api_key")? ...
+//!         Ok(Created {
+//!             outputs: BTreeMap::from([("value".to_owned(), format!("token for {name}"))]),
+//!             state: serde_json::json!({ "id": "token-1" }),
+//!         })
+//!     }
+//!
+//!     async fn delete(&self, req: &Request) -> anyhow::Result<()> {
+//!         let _id = req.state["id"].as_str().unwrap_or_default();
+//!         // ... delete the token with this ID ...
+//!         Ok(())
+//!     }
+//! }
+//!
+//! fn main() {
+//!     tegata_plugin::run(Example)
+//! }
+//! ```
 
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-/// 約束の版。変わったら上げる
+/// The protocol version. Raised when a change would make an old provider or an old tegata
+/// misread a message
 pub const PROTOCOL: u32 = 1;
 
-/// 操作
+/// An operation
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Op {
-    /// 型ごとの種類を返す
+    /// Return the types the provider supports
     Describe,
-    /// 新しく作り、出力と、あとで消すための state を返す
+    /// Make a new value; return its outputs and the state needed to delete it later
     Create,
-    /// state を使って消す
+    /// Delete what `create` made, identified by its state
     Delete,
-    /// 読むだけ（data）
+    /// Read current values (data types)
     Read,
 }
 
-/// 型の種類
+/// What kind of type a resource type is
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Kind {
-    /// 作って消す（create・delete）
+    /// tegata creates and deletes it (`create`, `delete`)
     Managed,
-    /// 読むだけ（read）
+    /// tegata only reads it (`read`)
     Data,
 }
 
+/// What tegata sends. Unknown fields are ignored, so new fields can be added without a new
+/// protocol version
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Request {
     pub protocol: u32,
     pub op: Op,
-    /// リソースの型（describe では空）
+    /// The resource type (`type` in the YAML). Empty for `describe`
     #[serde(default, rename = "type")]
     pub kind: String,
-    /// YAML のリソースの config
+    /// The resource's `config`
     #[serde(default)]
     pub config: serde_json::Value,
-    /// YAML のプロバイダーの config（アカウントなど）
+    /// The provider's `config` (account IDs and the like)
     #[serde(default)]
     pub provider_config: serde_json::Value,
-    /// 鍵（環境変数か、入力を隠して聞いたもの）。ログに出さない
+    /// Credential name → value (from environment variables, or typed by the user). Never log these
     #[serde(default)]
     pub credentials: BTreeMap<String, String>,
-    /// delete のとき、create が返したもの
+    /// For `delete`: the state that `create` returned for the generation being deleted
     #[serde(default)]
     pub state: serde_json::Value,
-    /// delete（prune）のとき、残す最新の世代の state（なければ null）。値が 1 つしか持てないもの（Tunnel の秘密など）で、
-    /// 古いものが使われていないかを、入れ替えた時刻と比べて確かめるのに使う。古いプロバイダーは読まずに無視してよい
+    /// For `delete`: the state of the latest generation, which is kept (null if there is none).
+    /// Useful for types that hold only one value, for example to check that nothing still uses
+    /// the old value. Providers may ignore it
     #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
     pub current_state: serde_json::Value,
-    /// YAML のファイルのあるディレクトリ（config の相対パスの基準）
+    /// The directory of the YAML file (relative paths in `config` are relative to it)
     #[serde(default)]
     pub base_dir: String,
-    /// リソースの名前（ログのため）
+    /// The resource's name (for messages)
     #[serde(default)]
     pub resource: String,
 }
 
+/// What the provider answers. [`run`] builds it from the [`Provider`] methods
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Response {
-    /// describe：型 → 種類
+    /// `describe`: type → kind
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub types: BTreeMap<String, Kind>,
-    /// describe：作ると前の値がすぐ効かなくなる型（値を 1 つしか持てないもの）。tegata は作る前に運営者に確かめる。
-    /// 古いプロバイダーは返さない
+    /// `describe`: types that hold only one value, so making a new one stops the previous value
+    /// from working at once. tegata asks the user before creating these
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub replaces: Vec<String>,
-    /// create・read：出力の名前 → 値
+    /// `create`, `read`: output name → value
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub outputs: BTreeMap<String, String>,
-    /// create：あとで消すのに要るもの（トークンの ID など。秘密を入れない）
+    /// `create`: what is needed to delete the value later (an ID, a time). tegata stores it in
+    /// plain text, so never put secret values here
     #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
     pub state: serde_json::Value,
-    /// 失敗したときの理由
+    /// Why the operation failed (shown to the user; never include secret values)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
 
-/// create の結果
+/// The result of [`Provider::create`]
 #[derive(Debug, Clone, Default)]
 pub struct Created {
     pub outputs: BTreeMap<String, String>,
@@ -94,7 +137,7 @@ pub struct Created {
 }
 
 impl Request {
-    /// config の文字列の項目（なければ失敗）
+    /// A string in the resource's `config` (an error if it is missing)
     pub fn config_str(&self, key: &str) -> anyhow::Result<&str> {
         self.config
             .get(key)
@@ -102,7 +145,7 @@ impl Request {
             .ok_or_else(|| anyhow::anyhow!("config.{key} is required"))
     }
 
-    /// プロバイダーの config の文字列の項目（なければ失敗）
+    /// A string in the provider's `config` (an error if it is missing)
     pub fn provider_str(&self, key: &str) -> anyhow::Result<&str> {
         self.provider_config
             .get(key)
@@ -110,7 +153,7 @@ impl Request {
             .ok_or_else(|| anyhow::anyhow!("provider config.{key} is required"))
     }
 
-    /// 鍵（なければ失敗）
+    /// A credential (an error if it is missing or empty)
     pub fn credential(&self, key: &str) -> anyhow::Result<&str> {
         self.credentials
             .get(key)
@@ -120,12 +163,13 @@ impl Request {
     }
 }
 
-/// プロバイダーの実装
+/// A provider. Implement the operations its types need: `create` and `delete` for managed
+/// types, `read` for data types
 #[async_trait::async_trait]
 pub trait Provider: Send + Sync {
-    /// 型 → 種類
+    /// Resource type → kind
     fn describe(&self) -> BTreeMap<String, Kind>;
-    /// 作ると前の値がすぐ効かなくなる型（[`Response::replaces`]）
+    /// Types that hold only one value ([`Response::replaces`])
     fn replaces(&self) -> Vec<String> {
         Vec::new()
     }
@@ -140,7 +184,11 @@ pub trait Provider: Send + Sync {
     }
 }
 
-/// 標準入力の要求を 1 つ処理して、標準出力に応答を書く。プロバイダーの main から呼ぶ
+/// Reads one request from standard input, runs it, writes the response to standard output, and
+/// exits (status 1 on failure). Call it from the provider's `main`.
+///
+/// It checks the protocol version and that the type is one [`Provider::describe`] lists before
+/// calling the provider
 pub fn run<P: Provider>(provider: P) -> ! {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()

@@ -1,6 +1,6 @@
 [package]
 name = "tegata-provider-gcp"
-description = "tegata のプロバイダー：Google Cloud"
+description = "tegata provider for Google Cloud: Cloud SQL user passwords"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.87"

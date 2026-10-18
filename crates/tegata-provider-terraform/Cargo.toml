@@ -1,6 +1,6 @@
 [package]
 name = "tegata-provider-terraform"
-description = "tegata のプロバイダー：terraform"
+description = "tegata provider that reads Terraform outputs"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.87"

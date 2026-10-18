@@ -1,6 +1,6 @@
 [package]
 name = "tegata-provider-cloudflare"
-description = "tegata のプロバイダー：cloudflare"
+description = "tegata provider for Cloudflare: account API tokens and Tunnel tokens"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.87"
