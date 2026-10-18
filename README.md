@@ -4,7 +4,7 @@
 
 Everything is declared in one YAML file. No server to run, no Kubernetes required.
 
-> **Status:** early. The code tegata grew out of manages the secrets of its author's production service, but the configuration format and the provider protocol may still change before 1.0. The only store today is Google Cloud Secret Manager.
+> **Status:** early. Its author uses tegata to manage the secrets of their own hosted service (its staging environment today; production, when it launches, is built with tegata from the start), but the configuration format and the provider protocol may still change before 1.0. The only store today is Google Cloud Secret Manager.
 
 ## Why
 

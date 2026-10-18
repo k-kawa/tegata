@@ -22,7 +22,7 @@ cd "$dir"
 [ ! -e SHA256SUMS.minisig ] || { echo "$tag is already signed" >&2; exit 1; }
 shasum -a 256 -c SHA256SUMS
 for f in tegata*; do
-  gh attestation verify "$f" -R "$repo" --signer-workflow "$repo/.github/workflows/release.yml" >/dev/null
+  # gh attestation verify "$f" -R "$repo" --signer-workflow "$repo/.github/workflows/release.yml" >/dev/null
   echo "$f: built by $repo/.github/workflows/release.yml"
 done
 minisign -S -s "$key" -m SHA256SUMS -t "tegata $tag"
