@@ -24,7 +24,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml_ng = "0.10"
 sha2 = "0.10"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "process", "io-util", "fs"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "process", "io-util", "fs", "time"] }
 
 [dev-dependencies]
 minisign = "0.10.0"

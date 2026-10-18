@@ -9,6 +9,7 @@ All notable changes to tegata and the providers in this repository, which share 
 - **Environments** (#6): staging, production, and others share one configuration and differ only in the store, the members of each identity, provider settings and credentials, resource settings, and destinations. Each environment's overrides are in a file of their own (`environments: { production: envs/production.yaml }`) or inline. Choose one with `-e <name>` or `TEGATA_ENV`; `tegata env <name>` prints its merged configuration.
 - `confirm: true` in an environment makes commands that change the store say what they will do there and ask for the environment's name. `--yes` skips the question, and is now accepted by `settle`, `prune`, `set` and `import` too.
 - Secrets of an environment are labeled `tegata-env=<name>`, and tegata refuses to touch another environment's secrets. `tegata check` without `-e` checks every environment, and reports environments that share a Google Cloud project or an IAM member.
+- **Credential sources** (#9): providers' admin credentials can come from `credential_sources`, apart from the store: Secret Manager in another project (`gcp`), or any command (`command`, for 1Password, Vault, AWS Secrets Manager and others). A credential names one with `from`; `env` still wins when set. Environments can point at other sources. The guide [Admin credentials and CI](docs/guides/admin-credentials.md) shows where to keep them and how to run tegata in CI without long-lived keys.
 
 ## [0.2.0] - 2026-10-19
 

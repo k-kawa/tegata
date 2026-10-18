@@ -205,33 +205,7 @@ impl<'a> Providers<'a> {
         if let Some(c) = cache.get(provider) {
             return Ok(c.clone());
         }
-        let spec = &self.loaded.config.providers[provider].credentials;
-        let mut got = BTreeMap::new();
-        for (key, c) in spec {
-            let from_env = c
-                .env
-                .as_deref()
-                .and_then(|e| std::env::var(e).ok())
-                .filter(|v| !v.is_empty());
-            let value = match from_env {
-                Some(v) => v,
-                None if c.optional => continue,
-                None => {
-                    let prompt = c
-                        .prompt
-                        .clone()
-                        .unwrap_or_else(|| format!("{provider} {key}"));
-                    anyhow::ensure!(
-                        std::io::stderr().is_terminal(),
-                        "credential {key} of provider {provider}: set {} or run in a terminal",
-                        c.env.as_deref().unwrap_or("its environment variable")
-                    );
-                    rpassword::prompt_password(format!("{prompt} (input hidden): "))
-                        .with_context(|| format!("cannot read {key}"))?
-                }
-            };
-            got.insert(key.clone(), value);
-        }
+        let got = crate::credentials::resolve(self.loaded, provider).await?;
         cache.insert(provider.to_owned(), got.clone());
         Ok(got)
     }

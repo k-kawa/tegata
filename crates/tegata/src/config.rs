@@ -23,6 +23,8 @@ pub struct Config {
     pub identities: BTreeMap<String, Identity>,
     /// 外のプロバイダー（random と manual は書かなくてよい）
     pub providers: BTreeMap<String, ProviderConfig>,
+    /// Where providers' admin credentials come from (apart from the store)
+    pub credential_sources: BTreeMap<String, CredentialSource>,
     pub resources: BTreeMap<String, Resource>,
     /// Where copies of secrets are written (GitHub Actions secrets). The store stays the source
     pub destinations: BTreeMap<String, Destination>,
@@ -157,6 +159,42 @@ pub struct Credential {
     pub prompt: Option<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub optional: bool,
+    /// Read from a credential source (when the environment variable is not set)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<CredentialFrom>,
+}
+
+/// Where a credential is read: a source under `credential_sources`, and what to read there
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CredentialFrom {
+    pub source: String,
+    /// A `gcp` source: the secret's name
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret: Option<String>,
+    /// A `gcp` source: a version (default: the latest enabled)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<u64>,
+    /// A `command` source: the last argument
+    #[serde(default, rename = "ref", skip_serializing_if = "Option::is_none")]
+    pub reference: Option<String>,
+}
+
+/// A place admin credentials are read from: Secret Manager in some project, or a command
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CredentialSource {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gcp: Option<GcpCredentialSource>,
+    /// The program and its arguments; the reference is added as the last argument
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct GcpCredentialSource {
+    pub project: String,
 }
 
 #[derive(Debug, Clone)]
@@ -204,6 +242,8 @@ struct RawConfig {
     identities: BTreeMap<String, Vec<String>>,
     #[serde(default)]
     providers: BTreeMap<String, ProviderConfig>,
+    #[serde(default)]
+    credential_sources: BTreeMap<String, CredentialSource>,
     resources: BTreeMap<String, RawResource>,
     #[serde(default)]
     destinations: BTreeMap<String, Destination>,
@@ -282,6 +322,8 @@ struct CurrentForm<'a> {
     identities: BTreeMap<&'a str, &'a Vec<String>>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     providers: &'a BTreeMap<String, ProviderConfig>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    credential_sources: &'a BTreeMap<String, CredentialSource>,
     resources: BTreeMap<&'a str, RawResource>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     destinations: &'a BTreeMap<String, Destination>,
@@ -406,6 +448,7 @@ impl RawConfig {
                 store,
                 identities,
                 providers: self.providers,
+                credential_sources: self.credential_sources,
                 resources,
                 destinations: self.destinations,
                 readers_from_templates: old,
@@ -485,6 +528,19 @@ impl Loaded {
                 );
             }
         }
+        for (name, s) in &self.config.credential_sources {
+            match (&s.gcp, &s.command) {
+                (Some(g), None) => anyhow::ensure!(
+                    !g.project.is_empty(),
+                    "credential source {name}: gcp needs a project"
+                ),
+                (None, Some(cmd)) => anyhow::ensure!(
+                    cmd.first().is_some_and(|p| !p.is_empty()),
+                    "credential source {name}: command is a program and its arguments"
+                ),
+                _ => anyhow::bail!("credential source {name}: set exactly one of gcp and command"),
+            }
+        }
         for (name, p) in &self.config.providers {
             match (&p.command, &p.source) {
                 (Some(_), None) => anyhow::ensure!(
@@ -506,6 +562,11 @@ impl Loaded {
                     })?;
                 }
                 _ => anyhow::bail!("provider {name}: set exactly one of command and source"),
+            }
+            for (key, c) in &p.credentials {
+                if let Some(from) = &c.from {
+                    self.validate_from(&format!("provider {name}: credential {key}"), from)?;
+                }
             }
         }
         let mut owner: BTreeMap<String, &str> = BTreeMap::new();
@@ -567,6 +628,29 @@ impl Loaded {
                     "destination {name}: no resource makes {here}"
                 );
             }
+        }
+        Ok(())
+    }
+
+    /// `from` names a source, and what that kind of source needs
+    fn validate_from(&self, what: &str, from: &CredentialFrom) -> anyhow::Result<()> {
+        let source = self
+            .config
+            .credential_sources
+            .get(&from.source)
+            .ok_or_else(|| anyhow::anyhow!("{what}: no credential source {}", from.source))?;
+        if source.gcp.is_some() {
+            anyhow::ensure!(
+                from.secret.is_some() && from.reference.is_none(),
+                "{what}: source {} is gcp, so give the secret (`secret: <name>`, optionally `version`), not ref",
+                from.source
+            );
+        } else {
+            anyhow::ensure!(
+                from.reference.is_some() && from.secret.is_none() && from.version.is_none(),
+                "{what}: source {} is a command, so give `ref: <reference>`",
+                from.source
+            );
         }
         Ok(())
     }
@@ -675,6 +759,7 @@ impl Loaded {
             stores: BTreeMap::from([(c.store_name.as_str(), &c.store)]),
             identities,
             providers: &c.providers,
+            credential_sources: &c.credential_sources,
             resources,
             destinations: &c.destinations,
         };
@@ -694,7 +779,7 @@ fn names_or_nobody(ids: &BTreeSet<String>) -> String {
 
 /// The keys an environment may override; everything else is shared
 const OVERRIDABLE: &str = "stores, identities.<i>, providers.<p>.config and .credentials, \
-                           resources.<r>.config, destinations, and confirm";
+                           credential_sources, resources.<r>.config, destinations, and confirm";
 
 fn base_dir_of(path: &Path) -> PathBuf {
     path.parent()
@@ -836,7 +921,7 @@ fn check_overrides(
         |section: &str, name: &str| shared.get(section).and_then(|s| s.get(name)).is_some();
     for (key, v) in map(over, "the overrides")? {
         match key.as_str() {
-            "stores" | "destinations" => {}
+            "stores" | "destinations" | "credential_sources" => {}
             "confirm" => anyhow::ensure!(v.is_bool(), "confirm is true or false"),
             "identities" => {
                 for (i, members) in map(&v, "identities")? {
@@ -1269,6 +1354,55 @@ resources: { db: { config: { instance: stg } } }
                 "environments staging and production use the same project myapp-stg",
                 "environments staging and production both give access to serviceAccount:app@stg",
             ]
+        );
+    }
+
+    #[test]
+    fn an_environment_can_read_credentials_elsewhere() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tegata.yaml");
+        std::fs::write(
+            &path,
+            r#"
+stores: { main: { local: { dir: s } } }
+credential_sources:
+  admin: { gcp: { project: admin-staging } }
+providers:
+  cloudflare:
+    command: x
+    credentials:
+      api_token: { from: { source: admin, secret: cloudflare-admin-token } }
+environments:
+  staging: {}
+  production:
+    credential_sources: { admin: { gcp: { project: admin-prod } } }
+    providers:
+      cloudflare:
+        credentials:
+          api_token: { from: { source: admin, secret: cloudflare-admin-token-prod } }
+resources: {}
+"#,
+        )
+        .unwrap();
+        let prod = Loaded::load_env(&path, Some("production")).unwrap();
+        let c = &prod.config;
+        assert_eq!(
+            c.credential_sources["admin"].gcp.as_ref().unwrap().project,
+            "admin-prod"
+        );
+        let from = c.providers["cloudflare"].credentials["api_token"]
+            .from
+            .as_ref()
+            .unwrap();
+        assert_eq!(from.secret.as_deref(), Some("cloudflare-admin-token-prod"));
+        let stg = Loaded::load_env(&path, Some("staging")).unwrap();
+        assert_eq!(
+            stg.config.credential_sources["admin"]
+                .gcp
+                .as_ref()
+                .unwrap()
+                .project,
+            "admin-staging"
         );
     }
 }
