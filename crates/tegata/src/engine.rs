@@ -233,8 +233,9 @@ impl<'a> Engine<'a> {
             .collect())
     }
 
-    /// 雛形とリソースが合っているか、プロバイダーに型があるか
-    pub async fn check(&self) -> anyhow::Result<Checked> {
+    /// プロバイダーに型があるか。`templates` があれば（identity と雛形のディレクトリ）、
+    /// その identity が雛形の名前をすべて読めるか。前の形では、役割の雛形もいつも確かめる
+    pub async fn check(&self, templates: Option<(&str, &Path)>) -> anyhow::Result<Checked> {
         let mut checked = Checked::default();
         let owned: BTreeSet<String> = self
             .loaded
@@ -246,7 +247,15 @@ impl<'a> Engine<'a> {
         let readers = self.loaded.readers()?;
         let reads =
             |id: &str, secret: &str| readers.get(secret).is_some_and(|ids| ids.contains(id));
-        for (id, names) in self.loaded.template_names()? {
+        let mut pairs = self.loaded.old_template_names()?;
+        if let Some((id, dir)) = templates {
+            anyhow::ensure!(
+                self.loaded.config.identities.contains_key(id),
+                "no identity {id} in the config"
+            );
+            pairs.insert(id.to_owned(), template::names_in_dir(dir)?);
+        }
+        for (id, names) in pairs {
             for n in &names {
                 if !owned.contains(n) {
                     checked.problems.push(format!(
@@ -601,19 +610,11 @@ impl<'a> Engine<'a> {
         Ok(())
     }
 
-    /// 前の形（雛形を手で埋めたファイル）から、値のない秘密に値を入れる
-    pub async fn import(&self, identity: &str, dir: &Path) -> anyhow::Result<()> {
-        let i = self
-            .loaded
-            .config
-            .identities
-            .get(identity)
-            .ok_or_else(|| anyhow::anyhow!("no identity {identity}"))?;
-        let templates = i.templates.as_deref().ok_or_else(|| {
-            anyhow::anyhow!("identity {identity} has no templates to match the files against")
-        })?;
+    /// 前の形（雛形を手で埋めたファイル）から、値のない秘密に値を入れる。
+    /// `dir` のファイルを、`templates` の同じ名前の雛形と突き合わせて値を取り出す
+    pub async fn import(&self, templates: &Path, dir: &Path) -> anyhow::Result<()> {
         let mut values = BTreeMap::new();
-        for tpl in template::files(&self.loaded.path(templates))? {
+        for tpl in template::files(templates)? {
             let filled = dir.join(tpl.file_name().expect("a file"));
             let Ok(text) = std::fs::read_to_string(&filled) else {
                 continue;

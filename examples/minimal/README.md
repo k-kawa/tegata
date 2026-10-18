@@ -11,7 +11,7 @@ A configuration that runs on your machine without a cloud account: secrets are k
 Run from this directory:
 
 ```sh
-tegata check                    # every name in templates/app is made by a resource
+tegata check app templates/app  # app can read every name in templates/app
 tegata apply                    # creates the secrets and the random key
 echo 'correct horse' | tegata set admin_password
 tegata status

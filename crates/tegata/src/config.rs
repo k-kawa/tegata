@@ -19,7 +19,7 @@ pub struct Config {
     /// The store's name in `stores` (`main` for the old form)
     pub store_name: String,
     pub store: StoreConfig,
-    /// Who reads secrets: a name → IAM members (and templates that `check` compares)
+    /// Who reads secrets: a name → IAM members
     pub identities: BTreeMap<String, Identity>,
     /// 外のプロバイダー（random と manual は書かなくてよい）
     pub providers: BTreeMap<String, ProviderConfig>,
@@ -34,9 +34,8 @@ pub struct Config {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Identity {
     pub members: Vec<String>,
-    /// Templates this identity renders. In the current form, `check` compares them with what it
-    /// can read; in the old form, they decide what it can read
-    pub templates: Option<String>,
+    /// The old form only: the role's templates, which decide what it can read
+    pub old_templates: Option<String>,
 }
 
 /// A place that receives copies of secrets. tegata writes there but never reads values back
@@ -196,8 +195,9 @@ struct RawConfig {
     /// The old form: `member` and `templates` per role
     #[serde(default)]
     roles: BTreeMap<String, OldRole>,
+    /// Name → IAM members
     #[serde(default)]
-    identities: BTreeMap<String, RawIdentity>,
+    identities: BTreeMap<String, Vec<String>>,
     #[serde(default)]
     providers: BTreeMap<String, ProviderConfig>,
     resources: BTreeMap<String, RawResource>,
@@ -210,21 +210,6 @@ struct RawConfig {
 struct OldRole {
     member: String,
     templates: String,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(untagged)]
-enum RawIdentity {
-    Members(Vec<String>),
-    Full(FullIdentity),
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct FullIdentity {
-    members: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    templates: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -287,7 +272,7 @@ impl RawPrevious {
 struct CurrentForm<'a> {
     stores: BTreeMap<&'a str, &'a StoreConfig>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
-    identities: BTreeMap<&'a str, RawIdentity>,
+    identities: BTreeMap<&'a str, &'a Vec<String>>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     providers: &'a BTreeMap<String, ProviderConfig>,
     resources: BTreeMap<&'a str, RawResource>,
@@ -339,7 +324,7 @@ impl RawConfig {
                         n,
                         Identity {
                             members: vec![r.member],
-                            templates: Some(r.templates),
+                            old_templates: Some(r.templates),
                         },
                     )
                 })
@@ -347,16 +332,10 @@ impl RawConfig {
         } else {
             self.identities
                 .into_iter()
-                .map(|(n, i)| {
-                    let identity = match i {
-                        RawIdentity::Members(members) => Identity {
-                            members,
-                            templates: None,
-                        },
-                        RawIdentity::Full(f) => Identity {
-                            members: f.members,
-                            templates: f.templates,
-                        },
+                .map(|(n, members)| {
+                    let identity = Identity {
+                        members,
+                        old_templates: None,
                     };
                     (n, identity)
                 })
@@ -575,12 +554,12 @@ impl Loaded {
         Ok(())
     }
 
-    /// Identity → the names in its templates (identities with templates only)
-    pub fn template_names(&self) -> anyhow::Result<BTreeMap<String, BTreeSet<String>>> {
+    /// The old form: role → the names in its templates (empty for the current form)
+    pub fn old_template_names(&self) -> anyhow::Result<BTreeMap<String, BTreeSet<String>>> {
         self.config
             .identities
             .iter()
-            .filter_map(|(id, i)| i.templates.as_ref().map(|t| (id, t)))
+            .filter_map(|(id, i)| i.old_templates.as_ref().map(|t| (id, t)))
             .map(|(id, t)| Ok((id.clone(), crate::template::names_in_dir(&self.path(t))?)))
             .collect()
     }
@@ -589,7 +568,7 @@ impl Loaded {
     pub fn readers(&self) -> anyhow::Result<BTreeMap<String, BTreeSet<String>>> {
         let mut readers: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         if self.config.readers_from_templates {
-            for (id, names) in self.template_names()? {
+            for (id, names) in self.old_template_names()? {
                 for n in names {
                     readers.entry(n).or_default().insert(id.clone());
                 }
@@ -617,22 +596,23 @@ impl Loaded {
     }
 
     /// The configuration in the current form, with readers taken from the templates for the
-    /// old form (what `apply` grants today), so that `apply` after migrating changes nothing
-    pub fn migrate(&self) -> anyhow::Result<String> {
+    /// old form (what `apply` grants today), so that `apply` after migrating changes nothing.
+    /// Also the `tegata check` commands that compare the old roles' templates, as before
+    pub fn migrate(&self) -> anyhow::Result<(String, Vec<String>)> {
         let readers = self.readers()?;
         let c = &self.config;
         let identities = c
             .identities
             .iter()
-            .map(|(n, i)| {
-                let raw = match &i.templates {
-                    None => RawIdentity::Members(i.members.clone()),
-                    Some(t) => RawIdentity::Full(FullIdentity {
-                        members: i.members.clone(),
-                        templates: Some(t.clone()),
-                    }),
-                };
-                (n.as_str(), raw)
+            .map(|(n, i)| (n.as_str(), &i.members))
+            .collect();
+        let checks = c
+            .identities
+            .iter()
+            .filter_map(|(n, i)| {
+                i.old_templates
+                    .as_ref()
+                    .map(|t| format!("tegata check {n} {t}"))
             })
             .collect();
         let mut resources = BTreeMap::new();
@@ -681,7 +661,7 @@ impl Loaded {
             resources,
             destinations: &c.destinations,
         };
-        Ok(serde_yaml_ng::to_string(&form)?)
+        Ok((serde_yaml_ng::to_string(&form)?, checks))
     }
 }
 
@@ -748,7 +728,7 @@ stores:
   main: { local: { dir: store } }
 identities:
   app: [serviceAccount:a@x, serviceAccount:b@x]
-  edge: { members: [group:edge@x], templates: tpl }
+  edge: [group:edge@x]
 resources:
   key:
     provider: random
@@ -772,7 +752,6 @@ providers:
         assert!(loaded.warnings.is_empty());
         assert_eq!(c.store_name, "main");
         assert_eq!(c.identities["app"].members.len(), 2);
-        assert_eq!(c.identities["edge"].templates.as_deref(), Some("tpl"));
         let key = &c.resources["key"];
         assert_eq!(key.secrets["KEY"], "value", "output defaults to value");
         assert_eq!(key.previous.as_deref(), Some("KEY_PREV"));
@@ -845,14 +824,15 @@ resources:
         .unwrap();
         let old = Loaded::load(&path).unwrap();
         assert_eq!(old.warnings.len(), 1);
-        let migrated = old.migrate().unwrap();
+        let (migrated, checks) = old.migrate().unwrap();
+        assert_eq!(checks, vec!["tegata check app tpl"]);
         std::fs::write(&path, &migrated).unwrap();
         let new = Loaded::load(&path).unwrap();
         assert!(new.warnings.is_empty(), "{migrated}");
         assert_eq!(new.readers().unwrap(), old.readers().unwrap(), "{migrated}");
         assert_eq!(
-            new.config.identities["app"].templates.as_deref(),
-            Some("tpl")
+            new.config.identities["app"].members,
+            vec!["serviceAccount:a@x"]
         );
         assert!(!migrated.contains("output: value"), "{migrated}");
     }

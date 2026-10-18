@@ -7,9 +7,7 @@ stores:
       dir: ./store
 
 identities:
-  app:
-    members: [serviceAccount:app@example.iam.gserviceaccount.com]
-    templates: ./templates/app      # check compares them with what app can read
+  app: [serviceAccount:app@example.iam.gserviceaccount.com]   # renders templates/app
 
 resources:
   session_key:

@@ -99,7 +99,7 @@ async fn manages_secrets_end_to_end() {
     let engine = Engine::new(&loaded, &store);
 
     // 雛形にあるのに作るものがない名前を知らせる
-    let checked = engine.check().await.unwrap();
+    let checked = engine.check(None).await.unwrap();
     assert_eq!(
         checked.problems,
         vec!["identity monitor: NOT_MADE is in the templates but no resource makes it"]
@@ -265,7 +265,7 @@ async fn imports_values_from_filled_files() {
     .unwrap();
     std::fs::write(filled.join("password"), "old-pw").unwrap();
 
-    engine.import("app", &filled).await.unwrap();
+    engine.import(&dir.join("tpl/app"), &filled).await.unwrap();
     assert_eq!(
         store.access("APP_TOKEN", None).await.unwrap().as_deref(),
         Some("old-token")
