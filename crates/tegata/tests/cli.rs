@@ -308,3 +308,66 @@ fn the_minimal_example_works() {
         line(&settled, "SESSION_KEY")
     );
 }
+
+/// Help and errors point to the documentation, and every page and section they name exists
+#[test]
+fn help_and_errors_link_to_the_docs() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    const BASE: &str = "https://github.com/k-kawa/tegata/blob/main/docs/";
+    let docs = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs");
+    let check_links = |out: &str| {
+        let links: Vec<&str> = out
+            .split_whitespace()
+            .filter_map(|w| w.strip_prefix(BASE))
+            .collect();
+        assert!(!links.is_empty(), "{out}");
+        for link in links {
+            let (page, section) = link.split_once('#').unwrap_or((link, ""));
+            let text = std::fs::read_to_string(docs.join(page))
+                .unwrap_or_else(|_| panic!("no page {page}"));
+            if !section.is_empty() {
+                let heading = format!("\n## {}\n", section.replace('-', " "));
+                assert!(text.contains(&heading), "no section {link}");
+            }
+        }
+    };
+
+    let (ok, out) = tegata(dir, &["--help"], None);
+    assert!(ok, "{out}");
+    assert!(
+        out.contains("Repository: https://github.com/k-kawa/tegata"),
+        "{out}"
+    );
+    check_links(&out);
+    for command in [
+        "init", "check", "status", "apply", "rotate", "set", "settle", "prune", "import", "render",
+    ] {
+        let (ok, out) = tegata(dir, &[command, "--help"], None);
+        assert!(ok, "{out}");
+        assert!(
+            out.contains(&format!("commands.md#tegata-{command}")),
+            "{out}"
+        );
+        check_links(&out);
+    }
+
+    // The configuration file cannot be read: the configuration reference
+    let (ok, out) = tegata(dir, &["status"], None);
+    assert!(!ok);
+    assert!(out.contains("see: https://"), "{out}");
+    assert!(out.contains("reference/configuration.md"), "{out}");
+    check_links(&out);
+
+    // A command fails: its section of the command reference
+    std::fs::write(
+        dir.join("tegata.yaml"),
+        "store: { local: { dir: store } }\nresources:\n  k: { provider: random, secrets: { K: value } }\n",
+    )
+    .unwrap();
+    let (ok, out) = tegata(dir, &["settle", "k"], None);
+    assert!(!ok);
+    assert!(out.contains("error: k has no previous"), "{out}");
+    assert!(out.contains("commands.md#tegata-settle"), "{out}");
+    check_links(&out);
+}

@@ -6,11 +6,48 @@ use clap::{Parser, Subcommand};
 use tegata::config::Loaded;
 use tegata::engine::{Approval, Engine};
 
+/// A page of the documentation on GitHub (`docs!("reference/commands.md#tegata-apply")`)
+macro_rules! docs {
+    ($page:literal) => {
+        concat!("https://github.com/k-kawa/tegata/blob/main/docs/", $page)
+    };
+}
+
+/// The section of the command reference for one command
+macro_rules! command_docs {
+    ($name:literal) => {
+        concat!(docs!("reference/commands.md#tegata-"), $name)
+    };
+}
+
+/// The help of one command: where its reference is
+macro_rules! command_help {
+    ($name:literal) => {
+        concat!("Reference: ", command_docs!($name))
+    };
+}
+
+const MAIN_HELP: &str = concat!(
+    "Documentation:\n",
+    "  Getting started:  ",
+    docs!("guides/getting-started.md"),
+    "\n  Commands:         ",
+    docs!("reference/commands.md"),
+    "\n  Configuration:    ",
+    docs!("reference/configuration.md"),
+    "\n  Providers:        ",
+    docs!("reference/providers.md"),
+    "\n  All:              ",
+    docs!("README.md"),
+    "\nRepository: https://github.com/k-kawa/tegata"
+);
+
 #[derive(Parser)]
 #[command(
     name = "tegata",
     version,
-    about = "Create, store, rotate, and fill in secrets"
+    about = "Create, store, rotate, and fill in secrets",
+    after_help = MAIN_HELP
 )]
 struct Cli {
     /// The configuration file (YAML)
@@ -29,21 +66,26 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Install the providers that have a `source`, and write tegata.lock
+    #[command(after_help = command_help!("init"))]
     Init {
         /// Choose the newest versions the requirements allow, instead of the locked ones
         #[arg(long)]
         upgrade: bool,
     },
     /// Check the configuration, providers, and the names used in templates
+    #[command(after_help = command_help!("check"))]
     Check,
     /// Show each resource and secret: generations, enabled versions, readers
+    #[command(after_help = command_help!("status"))]
     Status,
     /// Create secret containers and read access, create missing values, and re-read data resources
+    #[command(after_help = command_help!("apply"))]
     Apply {
         #[command(flatten)]
         approval: ApprovalArgs,
     },
     /// Create a new generation (copying the current value to `previous` first, if set)
+    #[command(after_help = command_help!("rotate"))]
     Rotate {
         #[arg(required = true)]
         resources: Vec<String>,
@@ -51,17 +93,22 @@ enum Command {
         approval: ApprovalArgs,
     },
     /// Put a value by hand (asked with hidden input on a terminal, otherwise read from stdin)
+    #[command(after_help = command_help!("set"))]
     Set { resource: String },
     /// Make `previous` equal to the current value (the end of a rotation)
+    #[command(after_help = command_help!("settle"))]
     Settle {
         #[arg(required = true)]
         resources: Vec<String>,
     },
     /// Clean up generations older than the latest: delete what providers created and disable the versions. All resources if none are given
+    #[command(after_help = command_help!("prune"))]
     Prune { resources: Vec<String> },
     /// Fill secrets that have no value from files filled in by hand (for moving to tegata)
+    #[command(after_help = command_help!("import"))]
     Import { role: String, dir: PathBuf },
     /// Fill `__NAME__` in templates with values from the store (on servers; does not read the configuration)
+    #[command(after_help = command_help!("render"))]
     Render {
         /// The Secret Manager project (optional on GCP VMs)
         #[arg(long)]
@@ -97,16 +144,48 @@ impl ApprovalArgs {
     }
 }
 
+impl Command {
+    /// The section of the command reference for this command
+    fn docs(&self) -> &'static str {
+        match self {
+            Command::Init { .. } => command_docs!("init"),
+            Command::Check => command_docs!("check"),
+            Command::Status => command_docs!("status"),
+            Command::Apply { .. } => command_docs!("apply"),
+            Command::Rotate { .. } => command_docs!("rotate"),
+            Command::Set { .. } => command_docs!("set"),
+            Command::Settle { .. } => command_docs!("settle"),
+            Command::Prune { .. } => command_docs!("prune"),
+            Command::Import { .. } => command_docs!("import"),
+            Command::Render { .. } => command_docs!("render"),
+        }
+    }
+}
+
+/// An error, and the page that helps with it (the command's reference when `None`)
+struct Failed {
+    error: anyhow::Error,
+    docs: Option<&'static str>,
+}
+
+impl From<anyhow::Error> for Failed {
+    fn from(error: anyhow::Error) -> Self {
+        Self { error, docs: None }
+    }
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
-    if let Err(e) = run().await {
-        eprintln!("error: {e:#}");
+    let cli = Cli::parse();
+    let command_docs = cli.command.docs();
+    if let Err(f) = run(cli).await {
+        eprintln!("error: {:#}", f.error);
+        eprintln!("see: {}", f.docs.unwrap_or(command_docs));
         std::process::exit(1);
     }
 }
 
-async fn run() -> anyhow::Result<()> {
-    let cli = Cli::parse();
+async fn run(cli: Cli) -> Result<(), Failed> {
     if let Command::Render {
         project,
         store_dir,
@@ -125,7 +204,10 @@ async fn run() -> anyhow::Result<()> {
         }
         return Ok(());
     }
-    let loaded = Loaded::load(&cli.file)?;
+    let loaded = Loaded::load(&cli.file).map_err(|error| Failed {
+        error,
+        docs: Some(docs!("reference/configuration.md")),
+    })?;
     if let Command::Init { upgrade } = &cli.command {
         // TEGATA_PROVIDER_MIRROR: a local copy of releases, for machines without internet access
         let lines = match std::env::var_os("TEGATA_PROVIDER_MIRROR") {
@@ -153,7 +235,9 @@ async fn run() -> anyhow::Result<()> {
             for p in &problems {
                 println!("{p}");
             }
-            anyhow::ensure!(problems.is_empty(), "{} problems", problems.len());
+            if !problems.is_empty() {
+                return Err(anyhow::anyhow!("{} problems", problems.len()).into());
+            }
             println!("ok");
         }
         Command::Status => engine.status().await?,
