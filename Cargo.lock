@@ -2186,7 +2186,7 @@ dependencies = [
 
 [[package]]
 name = "tegata"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2212,7 +2212,7 @@ dependencies = [
 
 [[package]]
 name = "tegata-plugin"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2223,7 +2223,7 @@ dependencies = [
 
 [[package]]
 name = "tegata-provider-aws"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2241,7 +2241,7 @@ dependencies = [
 
 [[package]]
 name = "tegata-provider-cloudflare"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2260,7 +2260,7 @@ dependencies = [
 
 [[package]]
 name = "tegata-provider-gcp"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2276,7 +2276,7 @@ dependencies = [
 
 [[package]]
 name = "tegata-provider-tailscale"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2292,7 +2292,7 @@ dependencies = [
 
 [[package]]
 name = "tegata-provider-terraform"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
