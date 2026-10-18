@@ -3,7 +3,8 @@
 # holds the signing key (it asks for the key's password).
 #   tools/sign-release.sh v0.1.0
 #
-# 1. downloads the files of the draft release and checks them against SHA256SUMS
+# 1. downloads the files of the draft release and checks them against SHA256SUMS, and that the
+#    release has notes (from CHANGELOG.md)
 # 2. checks that each file was built by this repository's release workflow (GitHub artifact
 #    attestations)
 # 3. signs SHA256SUMS with minisign, checks the signature with the official key, uploads
@@ -20,6 +21,9 @@ trap 'rm -rf "$dir"' EXIT
 gh release download "$tag" -R "$repo" -D "$dir"
 cd "$dir"
 [ ! -e SHA256SUMS.minisig ] || { echo "$tag is already signed" >&2; exit 1; }
+# The notes come from CHANGELOG.md (tools/release-notes.sh in the release workflow)
+[ -n "$(gh release view "$tag" -R "$repo" --json body -q .body | tr -d '[:space:]')" ] ||
+  { echo "$tag has no release notes (tools/release-notes.sh ${tag#v} | gh release edit $tag -R $repo --notes-file -)" >&2; exit 1; }
 shasum -a 256 -c SHA256SUMS
 for f in tegata*; do
   gh attestation verify "$f" -R "$repo" --signer-workflow "$repo/.github/workflows/release.yml" >/dev/null

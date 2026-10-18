@@ -21,6 +21,12 @@ cargo test --workspace
 - Dependencies: prefer pure Rust, and permissive licenses only (MIT, Apache-2.0, BSD, and similar).
 - Never print, log, or store secret values outside the secret store, including in error messages and in provider `state`.
 
+## Changelog
+
+A pull request that changes what users see (the configuration, a command, its output, a provider, the provider protocol) adds a line under `## [Unreleased]` in [CHANGELOG.md](CHANGELOG.md), in the section that fits: Added, Changed, Deprecated, Removed, Fixed, or Security. Write what changes for users, not how the code changed, and end with the pull request number. A change that breaks existing configurations or providers says how to move, as 0.2.0 does. Changes only to tests, CI, or wording do not need a line.
+
+When releasing, the version bump moves `[Unreleased]` to `## [<version>] - <YYYY-MM-DD>` and adds its comparison link at the bottom. The release notes are made from that section ([how the official releases are made](docs/guides/publishing-providers.md#how-the-official-releases-are-made)).
+
 ## Language
 
 Documentation, CLI help, error messages, commits, issues, and pull requests are in English. Some code comments are still in Japanese; translating them when you touch the code is welcome.
