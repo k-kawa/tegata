@@ -14,6 +14,7 @@ use anyhow::Context;
 use semver::{Version, VersionReq};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use tokio::sync::Mutex;
 
 use crate::config::{Loaded, ProviderConfig};
 
@@ -176,25 +177,49 @@ impl Releases for Mirror {
     }
 }
 
-/// GitHub releases. Tags are `v<version>`. `GITHUB_TOKEN`, if set, is sent (for private
-/// repositories and higher rate limits)
+/// GitHub releases. Tags are `v<version>`. Without a token, files come from the public download
+/// URLs (`github.com/<owner>/<repo>/releases/download/…`), which do not count against the API's
+/// rate limit for unauthenticated requests (60 an hour); only the list of releases uses the API.
+/// `GITHUB_TOKEN`, if set, is sent to the API, and files are downloaded through the API (needed for
+/// private repositories). What was fetched is kept for the run, so several providers from one
+/// release share the requests
 pub struct GitHub {
     http: reqwest::Client,
     api: String,
+    download: String,
     token: Option<String>,
+    versions: Mutex<BTreeMap<String, Vec<Version>>>,
+    releases: Mutex<BTreeMap<(String, Version), Release>>,
+    /// `SHA256SUMS` and its signature, by source and version
+    sums: Mutex<BTreeMap<(String, Version, String), Vec<u8>>>,
 }
 
 impl GitHub {
+    /// `TEGATA_GITHUB_API` (default `https://api.github.com`), `TEGATA_GITHUB_DOWNLOAD` (default
+    /// `https://github.com`) and `GITHUB_TOKEN`
     pub fn new() -> Self {
+        Self::with(
+            std::env::var("TEGATA_GITHUB_API")
+                .unwrap_or_else(|_| "https://api.github.com".to_owned()),
+            std::env::var("TEGATA_GITHUB_DOWNLOAD")
+                .unwrap_or_else(|_| "https://github.com".to_owned()),
+            std::env::var("GITHUB_TOKEN").ok().filter(|t| !t.is_empty()),
+        )
+    }
+
+    pub fn with(api: String, download: String, token: Option<String>) -> Self {
         let _ = rustls::crypto::ring::default_provider().install_default();
         Self {
             http: reqwest::Client::builder()
                 .user_agent(concat!("tegata/", env!("CARGO_PKG_VERSION")))
                 .build()
                 .expect("an HTTP client"),
-            api: std::env::var("TEGATA_GITHUB_API")
-                .unwrap_or_else(|_| "https://api.github.com".to_owned()),
-            token: std::env::var("GITHUB_TOKEN").ok().filter(|t| !t.is_empty()),
+            api,
+            download,
+            token,
+            versions: Mutex::new(BTreeMap::new()),
+            releases: Mutex::new(BTreeMap::new()),
+            sums: Mutex::new(BTreeMap::new()),
         }
     }
 
@@ -212,6 +237,39 @@ impl GitHub {
             None => req,
         }
     }
+
+    async fn ok(
+        &self,
+        req: reqwest::RequestBuilder,
+        url: &str,
+    ) -> anyhow::Result<reqwest::Response> {
+        let res = req.send().await?;
+        let status = res.status();
+        if status == reqwest::StatusCode::FORBIDDEN
+            || status == reqwest::StatusCode::TOO_MANY_REQUESTS
+        {
+            let hint = if self.token.is_none() {
+                " (GitHub's rate limit for requests without a token; set GITHUB_TOKEN, for example GITHUB_TOKEN=$(gh auth token))"
+            } else {
+                ""
+            };
+            anyhow::bail!("GET {url}: {status}{hint}");
+        }
+        anyhow::ensure!(status.is_success(), "GET {url}: {status}");
+        Ok(res)
+    }
+
+    async fn release(&self, source: &str, version: &Version) -> anyhow::Result<Release> {
+        let key = (source.to_owned(), version.clone());
+        if let Some(r) = self.releases.lock().await.get(&key) {
+            return Ok(r.clone());
+        }
+        let repo = Self::repo(source)?;
+        let url = format!("{}/repos/{repo}/releases/tags/v{version}", self.api);
+        let release: Release = self.ok(self.get(&url), &url).await?.json().await?;
+        self.releases.lock().await.insert(key, release.clone());
+        Ok(release)
+    }
 }
 
 impl Default for GitHub {
@@ -220,7 +278,7 @@ impl Default for GitHub {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 struct Release {
     tag_name: String,
     #[serde(default)]
@@ -229,7 +287,7 @@ struct Release {
     assets: Vec<Asset>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 struct Asset {
     name: String,
     url: String,
@@ -238,41 +296,59 @@ struct Asset {
 #[async_trait::async_trait]
 impl Releases for GitHub {
     async fn versions(&self, source: &str) -> anyhow::Result<Vec<Version>> {
+        if let Some(v) = self.versions.lock().await.get(source) {
+            return Ok(v.clone());
+        }
         let repo = Self::repo(source)?;
         let url = format!("{}/repos/{repo}/releases?per_page=100", self.api);
-        let res = self.get(&url).send().await?;
-        anyhow::ensure!(res.status().is_success(), "GET {url}: {}", res.status());
-        let releases: Vec<Release> = res.json().await?;
-        Ok(releases
+        let releases: Vec<Release> = self.ok(self.get(&url), &url).await?.json().await?;
+        let versions: Vec<Version> = releases
             .iter()
             .filter(|r| !r.draft)
             .filter_map(|r| Version::parse(r.tag_name.strip_prefix('v')?).ok())
-            .collect())
+            .collect();
+        self.versions
+            .lock()
+            .await
+            .insert(source.to_owned(), versions.clone());
+        Ok(versions)
     }
 
     async fn file(&self, source: &str, version: &Version, name: &str) -> anyhow::Result<Vec<u8>> {
+        let small = name == SUMS || name == SUMS_SIG;
+        let key = (source.to_owned(), version.clone(), name.to_owned());
+        if small {
+            if let Some(b) = self.sums.lock().await.get(&key) {
+                return Ok(b.clone());
+            }
+        }
         let repo = Self::repo(source)?;
-        let url = format!("{}/repos/{repo}/releases/tags/v{version}", self.api);
-        let res = self.get(&url).send().await?;
-        anyhow::ensure!(res.status().is_success(), "GET {url}: {}", res.status());
-        let release: Release = res.json().await?;
-        let asset = release
-            .assets
-            .iter()
-            .find(|a| a.name == name)
-            .with_context(|| format!("{source} v{version} has no {name}"))?;
-        let res = self
-            .get(&asset.url)
-            .header(reqwest::header::ACCEPT, "application/octet-stream")
-            .send()
-            .await?;
-        anyhow::ensure!(
-            res.status().is_success(),
-            "GET {}: {}",
-            asset.url,
-            res.status()
-        );
-        Ok(res.bytes().await?.to_vec())
+        let bytes = if self.token.is_none() {
+            let url = format!(
+                "{}/{repo}/releases/download/v{version}/{name}",
+                self.download
+            );
+            self.ok(self.http.get(&url), &url)
+                .await?
+                .bytes()
+                .await?
+                .to_vec()
+        } else {
+            let release = self.release(source, version).await?;
+            let asset = release
+                .assets
+                .iter()
+                .find(|a| a.name == name)
+                .with_context(|| format!("{source} v{version} has no {name}"))?;
+            let req = self
+                .get(&asset.url)
+                .header(reqwest::header::ACCEPT, "application/octet-stream");
+            self.ok(req, &asset.url).await?.bytes().await?.to_vec()
+        };
+        if small {
+            self.sums.lock().await.insert(key, bytes.clone());
+        }
+        Ok(bytes)
     }
 }
 
