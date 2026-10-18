@@ -116,7 +116,7 @@ impl<'a> Engine<'a> {
                 notice.push_str("  no role reads it\n");
             } else {
                 notice.push_str(&format!(
-                    "  read by: {}\n  run setup.sh on those VMs right after this\n",
+                    "  read by: {}\n  update them right after this (run `tegata render` there and restart what uses the value)\n",
                     readers.join(", ")
                 ));
             }

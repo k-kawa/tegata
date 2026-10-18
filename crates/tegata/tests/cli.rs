@@ -1,6 +1,7 @@
 //! CLI：値を標準入力から入れる（set）、previous、render
 
 use std::io::Write;
+use std::path::Path;
 use std::process::{Command, Stdio};
 
 fn tegata(dir: &std::path::Path, args: &[&str], stdin: Option<&str>) -> (bool, String) {
@@ -235,4 +236,75 @@ resources:
     assert!(ok, "{out}");
     assert_eq!(count(), 4);
     assert!(!tegata(dir, &["rotate", "--yes", "--dry-run", "db_password"], None).0);
+}
+
+/// examples/minimal の README の手順が、そのとおりに動く
+#[test]
+fn the_minimal_example_works() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    let example = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/minimal");
+    std::fs::create_dir_all(dir.join("templates/app")).unwrap();
+    for f in ["tegata.yaml", "templates/app/app.env"] {
+        std::fs::copy(example.join(f), dir.join(f)).unwrap();
+    }
+    let render = |dir: &Path| {
+        let (ok, out) = tegata(
+            dir,
+            &[
+                "render",
+                "--store-dir",
+                dir.join("store").to_str().unwrap(),
+                dir.join("templates/app").to_str().unwrap(),
+                dir.join("out").to_str().unwrap(),
+            ],
+            None,
+        );
+        assert!(ok, "{out}");
+        std::fs::read_to_string(dir.join("out/app.env")).unwrap()
+    };
+    let line = |text: &str, key: &str| -> String {
+        text.lines()
+            .find_map(|l| l.strip_prefix(&format!("{key}=")))
+            .unwrap()
+            .to_owned()
+    };
+
+    for (args, stdin) in [
+        (vec!["check"], None),
+        (vec!["apply"], None),
+        (vec!["set", "admin_password"], Some("correct horse\n")),
+        (vec!["status"], None),
+    ] {
+        let (ok, out) = tegata(dir, &args, stdin);
+        assert!(ok, "{args:?}: {out}");
+    }
+    let first = render(dir);
+    let key = line(&first, "SESSION_KEY");
+    assert_eq!(key.len(), 64, "{first}");
+    assert_eq!(line(&first, "PREVIOUS_SESSION_KEY"), key);
+    assert_eq!(
+        line(&first, "ADMIN_PASSWORD_SHA256"),
+        tegata::template::sha256_hex("correct horse")
+    );
+    assert_eq!(line(&first, "MAIL_FROM"), "Example <noreply@example.com>");
+
+    let (ok, out) = tegata(dir, &["rotate", "session_key"], None);
+    assert!(ok, "{out}");
+    let rotated = render(dir);
+    assert_ne!(line(&rotated, "SESSION_KEY"), key);
+    assert_eq!(line(&rotated, "PREVIOUS_SESSION_KEY"), key);
+    for args in [
+        vec!["settle", "session_key"],
+        vec!["prune", "session_key"],
+        vec!["status"],
+    ] {
+        let (ok, out) = tegata(dir, &args, None);
+        assert!(ok, "{args:?}: {out}");
+    }
+    let settled = render(dir);
+    assert_eq!(
+        line(&settled, "PREVIOUS_SESSION_KEY"),
+        line(&settled, "SESSION_KEY")
+    );
 }

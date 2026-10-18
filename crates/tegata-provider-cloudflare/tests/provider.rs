@@ -319,7 +319,7 @@ async fn rotates_tunnel_tokens_and_checks_old_connectors_on_prune() {
     let before = "2026-01-01T00:00:00Z";
     let after = "2999-01-01T00:00:00Z";
 
-    // 入れ替えより前に起動したコネクターが残っていれば、prune を断る（どの VM かを出す）
+    // 入れ替えより前に起動したコネクターが残っていれば、prune を断る（どこからつないでいるかを出す）
     *fake.connectors.lock().unwrap() = json!([
         { "id": "c-old", "version": "2026.10.0", "run_at": before, "conns": [{ "origin_ip": "10.1.0.4" }] },
         { "id": "c-new", "version": "2026.10.0", "run_at": after, "conns": [{ "origin_ip": "10.1.0.2" }] },

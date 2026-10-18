@@ -1,0 +1,25 @@
+# The smallest tegata setup: no cloud account and no external providers.
+# Secrets go to ./store (plain-text JSON files; for trying tegata only).
+
+store:
+  local:
+    dir: ./store
+
+roles:
+  app:
+    member: serviceAccount:app@example.iam.gserviceaccount.com
+    templates: ./templates/app
+
+resources:
+  session_key:
+    provider: random
+    config: { bytes: 32 }
+    secrets: { SESSION_KEY: value }
+    previous: PREVIOUS_SESSION_KEY
+  admin_password:
+    provider: manual
+    secrets: { ADMIN_PASSWORD: value }
+  mail:
+    provider: value
+    config: { from: "Example <noreply@example.com>" }
+    secrets: { MAIL_FROM: from }

@@ -1,7 +1,7 @@
 //! tegata のプロバイダー：AWS
 //!
 //! 型 `ses_smtp_credentials`（managed）：Amazon SES の SMTP の認証情報を作る・消す。
-//! IAM ユーザー（SES で送るだけの権限。作るのは手で。docs/runbooks/monitor-setup.md）のアクセスキーを作り、
+//! IAM ユーザー（SES で送るだけの権限。作るのは手で）のアクセスキーを作り、
 //! そのシークレットから SMTP のパスワードを作る（SES の決まり：SigV4 の鍵の導き方で、`SendRawEmail` に署名した値の先頭に
 //! 0x04 を付けて base64。https://docs.aws.amazon.com/ses/latest/dg/smtp-credentials.html）。
 //! - config：`user`（IAM ユーザー）、`region`（SES のリージョン。既定 us-west-2）、`profile`（aws のプロファイル。省ける）

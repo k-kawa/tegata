@@ -20,7 +20,7 @@
 //! - 出力：`value`（トークン）
 //! - state：`tunnel_id`、`rotated_at`（秘密を設定した時刻）
 //! - delete（prune）：前の秘密のトークンが、もう使われていないことを確かめる。残す世代の `rotated_at` より前に起動した
-//!   コネクター（前の秘密でつないだもの）が残っていれば、どの VM かを出して断る（その VM で setup.sh を流して、
+//!   コネクター（前の秘密でつないだもの）が残っていれば、どこからつないでいるかを出して断る（そこで cloudflared を
 //!   新しいトークンで起動し直してから、もう一度 prune する）。切って消すことはしない（客のリクエストが届かなくなるため）
 //!
 //! 操作は、どれも API を直接呼ぶ。試験では TEGATA_CLOUDFLARE_API（API の場所）、TEGATA_CF_CONFIG（cf の設定のファイル）、
@@ -305,7 +305,7 @@ impl Cloudflare {
         anyhow::ensure!(
             old.is_empty(),
             "tunnel {name}: still connected with the old token (started before the rotation at {}): {}. \
-             Run setup.sh on those VMs so that cloudflared restarts with the new token, then prune again",
+             Restart cloudflared there with the new token, then prune again",
             rotated_at.to_rfc3339(),
             old.join("; ")
         );
@@ -333,7 +333,7 @@ impl Provider for Cloudflare {
         ])
     }
 
-    /// Tunnel の秘密は 1 つだけ（3.10）
+    /// Tunnel の秘密は 1 つだけ
     fn replaces(&self) -> Vec<String> {
         vec!["tunnel_token".to_owned()]
     }

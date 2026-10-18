@@ -19,6 +19,8 @@ Providers are separate executables that speak JSON over stdin and stdout, so you
 
 ## Quick look
 
+To try it on your machine without a cloud account, see [examples/minimal](examples/minimal).
+
 ```yaml
 # tegata.yaml
 store:
@@ -100,7 +102,7 @@ tegata prune session_key     # disable the old versions
 | `tegata import <role> <dir>` | Fills secrets that have no value from files you filled in by hand before using tegata |
 | `tegata render [--project <p>] <templates> <out>` | Fills `__NAME__` (and `__NAME\|sha256__`, the SHA-256 of the value) in each template file. Names that are missing or unreadable stay as they are and are listed |
 
-The configuration file is `tegata.yaml`, or `-f <file>` / `TEGATA_FILE`.
+The configuration file is `tegata.yaml`, or `-f <file>` / `TEGATA_FILE`. Every key is described in the [configuration reference](docs/configuration.md).
 
 **Values that stop working at once.** Some things can hold only one value: a database user's password, a Cloudflare Tunnel's secret. Creating a new one breaks new connections until the servers are updated. Providers declare these types, and tegata asks before creating them (`--yes` to skip, `--dry-run` to only show).
 
@@ -117,7 +119,7 @@ The configuration file is `tegata.yaml`, or `-f <file>` / `TEGATA_FILE`.
 | `tegata-provider-gcp` | `sql_user` | Cloud SQL built-in user passwords |
 | `tegata-provider-terraform` | `outputs` (data) | Values read from Terraform outputs |
 
-Writing a provider: see [the provider protocol](docs/provider-protocol.md).
+Settings, outputs, and rotation behavior of each: [providers](docs/providers.md). Writing a provider: [the provider protocol](docs/provider-protocol.md).
 
 ### Installing providers
 
@@ -165,6 +167,14 @@ cargo install --path crates/tegata
 ```
 
 Then let `tegata init` install the providers (see [Installing providers](#installing-providers)), or `cargo install` them too. Prebuilt binaries of tegata itself are planned.
+
+## Documentation
+
+- [Configuration reference](docs/configuration.md): every key of `tegata.yaml`, templates, generations and rotation, environment variables
+- [Providers](docs/providers.md): the providers in this repository
+- [Provider protocol](docs/provider-protocol.md): writing your own provider
+- [Releasing providers](docs/releasing.md): publishing providers for `tegata init`
+- [Security policy](SECURITY.md): reporting vulnerabilities, the release signing key
 
 ## License
 
