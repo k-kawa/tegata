@@ -15,7 +15,7 @@ Every command of `tegata`, its options, and what it prints. The outputs below we
 | [`import`](#tegata-import) | `tegata import [--yes] <templates> <dir>` | yes | no |
 | [`migrate`](#tegata-migrate) | `tegata migrate` | no | no |
 | [`env`](#tegata-env) | `tegata env <name>` | no | no |
-| [`render`](#tegata-render) | `tegata render [--project <p> \| --store-dir <d>] <templates> <out>` | no | no |
+| [`render`](#tegata-render) | `tegata render [--project <p> \| --store-dir <d>] [--on-change <cmd>] [--exit-code] [--fail-on-missing] <templates> <out>` | no | no |
 
 All commands except `render` run where you keep `tegata.yaml` and can administer the store. `render` runs on servers. Every command that changes a value (`apply`, `rotate`, `settle`, `set`, `import`) also writes the changed values to [destinations](configuration.md#destinations).
 
@@ -37,8 +37,9 @@ Environment variables: see [the configuration reference](configuration.md#enviro
 | 0 | Success |
 | 1 | An error, printed as `error: ...` on standard error. `check` also exits 1 when it finds problems |
 | 2 | A usage error, such as an unknown option |
+| 3 | `render --exit-code`: a file changed |
 
-`render` exits 0 even when some names stay unfilled; it lists them instead.
+`render` exits 0 even when some names stay unfilled; it lists them instead (`--fail-on-missing` makes that an error).
 
 After an error, a `see:` line names the page that helps: the failed command's section of this reference, or the [configuration reference](configuration.md) when `tegata.yaml` cannot be read or is invalid. `tegata --help` lists the main pages, and `tegata <command> --help` ends with the link to that command's section.
 
@@ -281,15 +282,21 @@ $ tegata check app ./templates/app
 ## tegata render
 
 ```text
-tegata render [--project <project> | --store-dir <dir>] <templates> <out>
+tegata render [--project <project> | --store-dir <dir>] [--on-change <command>] [--exit-code]
+              [--fail-on-missing] <templates> <out>
 ```
 
 Fills every file directly in `<templates>` with the latest enabled version of each secret, and writes it to `<out>` under the same name. It reads only the store: no YAML, no providers, and no `tegata init` on the server.
+
+A file whose content is the same as the one already in `<out>` is not written again, so its modification time stays. The others are written to a temporary file and renamed. So `render` can run on a timer, and says what changed.
 
 | Option | Description |
 | --- | --- |
 | `--project <project>` | The Secret Manager project. Optional on Compute Engine VMs, where it comes from the metadata server |
 | `--store-dir <dir>` | Read a `local` store instead (for trying tegata and tests) |
+| `--on-change <command>` | Run the command with `sh -c` once, after writing, when any file changed. The changed files' names are in `TEGATA_CHANGED`, separated by spaces. If it fails, `render` fails (the files are written already) |
+| `--exit-code` | Exit with 3 when a file changed, 0 when nothing did |
+| `--fail-on-missing` | When a name is missing in the store or cannot be read, write nothing and fail, instead of leaving `__NAME__` in the file |
 
 | Placeholder | Becomes |
 | --- | --- |
@@ -302,4 +309,11 @@ Names that are missing in the store, or that the caller cannot read, stay as wri
 $ tegata render --project my-project templates/app /etc/app
 filled 1 files
   not in the store: NEW_KEY
+
+$ tegata render --on-change 'systemctl reload-or-restart app' templates/app /etc/app
+filled 3 files
+  changed: app.env
+ran: systemctl reload-or-restart app (exit status: 0)
 ```
+
+Running it on a timer, so that rotations reach the servers by themselves: [Running on servers](../guides/running-on-servers.md).
