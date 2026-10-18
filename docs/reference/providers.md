@@ -5,7 +5,7 @@ The providers in this repository. Each is a separate executable, `tegata-provide
 For each type:
 
 - **Managed** types are created by `apply` and `rotate` and deleted by `prune`. **Data** types are only read, on every `apply`.
-- **Outputs** are the names you map secrets to in `secrets`.
+- **Outputs** are what you put in `output` of each entry under `stores.<store>` (see [resources](configuration.md#resources)). The examples store everything in a store named `main`, read by an identity named `app`.
 - **Replaced at once** means that making a new value stops the previous one from working, so tegata asks before doing it (see [configuration](configuration.md#generations-and-rotation)).
 
 | Provider | Type | Kind | Replaced at once | What it makes | What `prune` does |
@@ -51,9 +51,10 @@ resources:
           r2_buckets: [releases]
         - permissions: ["DNS Write|DNS Edit"]
           zones: [example.com]
-    secrets:
-      RELEASES_ACCESS_KEY_ID: id
-      RELEASES_SECRET_ACCESS_KEY: r2_secret_access_key
+    stores:
+      main:
+        - { output: id, name: RELEASES_ACCESS_KEY_ID, readers: [app] }
+        - { output: r2_secret_access_key, name: RELEASES_SECRET_ACCESS_KEY, readers: [app] }
 ```
 
 | Config | Description |
@@ -79,7 +80,9 @@ resources:
     provider: cloudflare
     type: tunnel_token
     config: { tunnel: web }
-    secrets: { TUNNEL_TOKEN: value }
+    stores:
+      main:
+        - { name: TUNNEL_TOKEN, readers: [app] }
 ```
 
 | Config | Description |
@@ -120,7 +123,9 @@ resources:
     config:
       tags: [tag:server]
       reusable: true
-    secrets: { TAILSCALE_AUTH_KEY: key }
+    stores:
+      main:
+        - { output: key, name: TAILSCALE_AUTH_KEY, readers: [app] }
 ```
 
 | Config | Description |
@@ -159,9 +164,10 @@ resources:
     provider: aws
     type: ses_smtp_credentials
     config: { user: ses-sender, region: us-west-2 }
-    secrets:
-      SMTP_USERNAME: username
-      SMTP_PASSWORD: password
+    stores:
+      main:
+        - { output: username, name: SMTP_USERNAME, readers: [app] }
+        - { output: password, name: SMTP_PASSWORD, readers: [app] }
 ```
 
 | Config | Description |
@@ -203,7 +209,9 @@ resources:
     provider: gcp
     type: sql_user
     config: { instance: main, user: app }
-    secrets: { DATABASE_PASSWORD: password }
+    stores:
+      main:
+        - { output: password, name: DATABASE_PASSWORD, readers: [app] }
 ```
 
 | Config | Description |
@@ -238,9 +246,10 @@ resources:
     provider: terraform
     type: outputs
     config: { dir: ../terraform, output: app_settings }
-    secrets:
-      BUCKET_NAME: bucket
-      DATABASE_HOST: db_host
+    stores:
+      main:
+        - { output: bucket, name: BUCKET_NAME, readers: [app] }
+        - { output: db_host, name: DATABASE_HOST, readers: [app] }
 ```
 
 | Config | Description |

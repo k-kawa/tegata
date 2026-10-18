@@ -30,4 +30,4 @@ tegata prune session_key        # disable the old versions
 tegata status
 ```
 
-With Google Cloud Secret Manager, replace `store` with `gcp: { project: ..., location: ... }`, set `member` to the service account of the server that renders, and run `tegata render templates/app out` on that server. See the [configuration reference](../../docs/reference/configuration.md).
+With Google Cloud Secret Manager, replace the store `main` with `gcp: { project: ..., location: ... }`, set the members of `app` to the service account of the server that renders, and run `tegata render templates/app out` on that server. See the [configuration reference](../../docs/reference/configuration.md).

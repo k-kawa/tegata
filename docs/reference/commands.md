@@ -12,7 +12,8 @@ Every command of `tegata`, its options, and what it prints. The outputs below we
 | [`settle`](#tegata-settle) | `tegata settle <resource>...` | yes | no |
 | [`prune`](#tegata-prune) | `tegata prune [<resource>...]` | yes | `delete` |
 | [`set`](#tegata-set) | `tegata set <resource>` | yes | no |
-| [`import`](#tegata-import) | `tegata import <role> <dir>` | yes | no |
+| [`import`](#tegata-import) | `tegata import <identity> <dir>` | yes | no |
+| [`migrate`](#tegata-migrate) | `tegata migrate` | no | no |
 | [`render`](#tegata-render) | `tegata render [--project <p> \| --store-dir <d>] <templates> <out>` | no | no |
 
 All commands except `render` run where you keep `tegata.yaml` and can administer the store. `render` runs on servers. Every command that changes a value (`apply`, `rotate`, `settle`, `set`, `import`) also writes the changed values to [destinations](configuration.md#destinations).
@@ -51,7 +52,7 @@ see: https://github.com/k-kawa/tegata/blob/main/docs/reference/commands.md#tegat
 | --- | --- | --- |
 | `tegata.yaml` | you | The [configuration](configuration.md). Commit it |
 | `tegata.lock` | `init` | The chosen provider versions, their requirement, signing key, and the SHA-256 of every platform's executable. Commit it |
-| Template directories | you | Files with `__NAME__` placeholders, one directory per role |
+| Template directories | you | Files with `__NAME__` placeholders that `render` fills, usually one directory per identity |
 | `$TEGATA_CACHE_DIR/...` | `init` | The installed providers |
 | The output directory of `render` | `render` | Mode 0700; each file 0600, written to a temporary file and renamed |
 | `store.local.dir` | every command | One plain-text JSON file per secret, mode 0600. For trying tegata and tests only |
@@ -87,12 +88,14 @@ TEGATA_PROVIDER_MIRROR=/mnt/mirror tegata init   # a machine without internet ac
 tegata check
 ```
 
-Checks the configuration and changes nothing: the YAML loads, every provider answers `describe` and has the resource's `type`, and every `__NAME__` in a role's templates is made by some resource. Prints `ok`, or one problem per line and exits 1.
+Checks the configuration and changes nothing: the YAML loads, every provider answers `describe` and has the resource's `type`, and for every identity with `templates`, each `__NAME__` in them is made by some resource and readable by that identity. Prints `ok`, or one problem per line and exits 1. Secrets an identity can read but its templates do not use are listed as warnings, which do not fail the check.
 
 ```text
 $ tegata check
-role app: NOT_MADE is in the templates but no resource makes it
-error: 1 problems
+warning: identity edge: can read MAIL, which its templates do not use
+identity app: NOT_MADE is in the templates but no resource makes it
+identity edge: KEY is in the templates but edge cannot read it (add edge to its readers)
+error: 2 problems
 ```
 
 ## tegata status
@@ -101,7 +104,7 @@ error: 1 problems
 tegata status
 ```
 
-For each resource: its provider and type, the latest generation, and how many older generations wait for `prune`. For each secret: the latest enabled version and the roles that read it. Then the secrets labeled `managed-by=tegata` that are no longer in the YAML, then the state of each [destination](configuration.md#destinations).
+For each resource: its provider and type, the latest generation, and how many older generations wait for `prune`. For each secret: the latest enabled version and the identities that read it. Then the secrets labeled `managed-by=tegata` that are no longer in the YAML, then the state of each [destination](configuration.md#destinations).
 
 ```text
 $ tegata status
@@ -125,7 +128,7 @@ tegata apply [--yes | --dry-run]
 Makes the store match the YAML:
 
 - creates the missing secrets, labeled `managed-by=tegata` and `tegata-resource=<resource>`;
-- sets each secret's readers to exactly the roles whose templates use it;
+- sets each secret's read access to exactly the members of its `readers`;
 - moves the secrets of a renamed resource to the resource that now lists them;
 - makes the first generation of every managed resource that has no value yet (`manual` resources wait for `tegata set`);
 - reads data resources again, adding a version where an output changed and disabling the older ones;
@@ -212,13 +215,27 @@ op read op://infra/admin/password | tegata set admin_password
 ## tegata import
 
 ```text
-tegata import <role> <dir>
+tegata import <identity> <dir>
 ```
 
-For moving to tegata. `<dir>` holds files with the same names as the role's templates, filled in by hand before tegata (for example the configuration files your servers use today). tegata matches each file against its template, takes the values out, and puts them into the secrets that have no value yet. Secrets that already have one are skipped (`already has a value; skipped`). `prune` never deletes imported generations on the provider.
+For moving to tegata. The identity must have `templates`. `<dir>` holds files with the same names as those templates, filled in by hand before tegata (for example the configuration files your servers use today). tegata matches each file against its template, takes the values out, and puts them into the secrets that have no value yet. Secrets that already have one are skipped (`already has a value; skipped`). `prune` never deletes imported generations on the provider.
 
 ```sh
 tegata import app /etc/app
+```
+
+## tegata migrate
+
+```text
+tegata migrate
+```
+
+Prints the configuration in the current form to standard output, and changes nothing. For a file in the [old form](configuration.md#the-old-form-and-tegata-migrate) (`store`, `roles`, `resources.*.secrets`), each secret's `readers` are filled in from the templates, which is what `apply` grants today, so `apply` after migrating changes nothing in the store. Comments are not kept. Other commands still read an old-form file, with a warning that names `tegata migrate`.
+
+```sh
+tegata migrate > tegata.new.yaml && diff tegata.yaml tegata.new.yaml
+mv tegata.new.yaml tegata.yaml
+tegata check
 ```
 
 ## tegata render

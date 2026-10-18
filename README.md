@@ -1,6 +1,6 @@
 # tegata
 
-**Secrets lifecycle as code for cloud secret stores.** tegata creates secrets (random keys, API tokens for services such as Cloudflare and Tailscale, database passwords), stores them in a cloud secret store, gives each server read access to exactly the secrets its templates use, rotates them, cleans up the old ones, and fills in configuration templates on the servers.
+**Secrets lifecycle as code for cloud secret stores.** tegata creates secrets (random keys, API tokens for services such as Cloudflare and Tailscale, database passwords), stores them in a cloud secret store, gives each server or application read access to exactly the secrets you list for it, rotates them, cleans up the old ones, and fills in configuration templates on the servers.
 
 Everything is declared in one YAML file. No server to run, no Kubernetes required.
 
@@ -11,7 +11,7 @@ Everything is declared in one YAML file. No server to run, no Kubernetes require
 Cloud secret stores and Vault-style servers are good at *storing* secrets. Rotating secrets that belong to *other services* is usually left to you: write a rotation function per service, or do it by hand in each dashboard. tegata puts the whole lifecycle in one place:
 
 - **Create:** a resource names a provider (`random`, `cloudflare`, `tailscale`, ...) and its settings. `tegata apply` creates what does not exist yet.
-- **Store and grant:** values go to Secret Manager. Each role (a server, a service account) can read exactly the secrets whose names appear in its templates, and nothing else.
+- **Store and grant:** values go to Secret Manager. Each secret names its readers (identities: the service accounts of servers, applications, CI workflows), and only they can read it.
 - **Rotate and clean up:** `tegata rotate` makes a new generation; after the servers pick it up, `tegata prune` deletes what the provider created for older generations (for example, the old API token) and disables the old versions.
 - **Fill in:** on a server, `tegata render` replaces `__NAME__` in templates with the stored values.
 - **Deliver:** copies of secrets can also go to GitHub Actions secrets (of a repository or an environment). tegata writes them again whenever the value changes, so CI picks up a rotation on its next run.
@@ -24,15 +24,16 @@ To try it on your machine without a cloud account, see [examples/minimal](exampl
 
 ```yaml
 # tegata.yaml
-store:
-  gcp:
-    project: my-project
-    location: us-central1          # where secret replicas live (user-managed replication)
+stores:
+  main:
+    gcp:
+      project: my-project
+      location: us-central1        # where secret replicas live (user-managed replication)
 
-roles:                             # who reads what: decided by the names in the templates
+identities:                        # who reads secrets: names for IAM members
   app:
-    member: serviceAccount:app-vm@my-project.iam.gserviceaccount.com
-    templates: ./templates/app     # a directory of files with __NAME__ placeholders
+    members: [serviceAccount:app-vm@my-project.iam.gserviceaccount.com]
+    templates: ./templates/app     # optional: what app renders; `tegata check` compares it with what app reads
 
 providers:                         # external providers (random, manual and value are built in)
   cloudflare:
@@ -46,8 +47,10 @@ resources:
   session_key:
     provider: random
     config: { bytes: 32 }
-    secrets: { SESSION_KEY: value }
-    previous: PREVIOUS_SESSION_KEY # rotate copies the current value here first
+    stores:
+      main:                        # where it is stored, under what name, and who reads it
+        - { name: SESSION_KEY, readers: [app] }
+    previous: { name: PREVIOUS_SESSION_KEY } # rotate copies the current value here first
   releases_read:
     provider: cloudflare
     type: api_token
@@ -56,9 +59,10 @@ resources:
       policies:
         - permissions: [Workers R2 Storage Bucket Item Read]
           r2_buckets: [releases]
-    secrets:                       # secret name: provider output
-      RELEASES_ACCESS_KEY_ID: id
-      RELEASES_SECRET_ACCESS_KEY: r2_secret_access_key
+    stores:
+      main:                        # one entry per provider output
+        - { output: id, name: RELEASES_ACCESS_KEY_ID, readers: [app] }
+        - { output: r2_secret_access_key, name: RELEASES_SECRET_ACCESS_KEY, readers: [app] }
 ```
 
 ```text
@@ -71,7 +75,7 @@ RELEASES_SECRET_ACCESS_KEY=__RELEASES_SECRET_ACCESS_KEY__
 
 ```sh
 tegata init                  # install the providers, pinned in tegata.lock
-tegata check                 # names in templates vs. resources, providers
+tegata check                 # providers, and templates vs. what each identity can read
 tegata apply                 # containers, read access, missing values
 tegata status                # generations, enabled versions, readers
 
@@ -93,14 +97,15 @@ tegata prune session_key     # disable the old versions
 | Command | What it does |
 | --- | --- |
 | `tegata init [--upgrade]` | Installs the providers that have a `source`, and writes `tegata.lock`. See [Installing providers](#installing-providers) |
-| `tegata check` | Checks the configuration, the providers, and that every `__NAME__` in the templates is made by some resource |
-| `tegata status` | Shows each resource and secret: generations, enabled versions, which roles read it. Also lists tegata secrets that are no longer in the YAML |
+| `tegata check` | Checks the configuration, the providers, and that every `__NAME__` in an identity's templates is made by some resource and readable by that identity |
+| `tegata status` | Shows each resource and secret: generations, enabled versions, which identities read it. Also lists tegata secrets that are no longer in the YAML |
 | `tegata apply [--yes \| --dry-run]` | Creates secret containers, labels and read access; creates values that do not exist yet; re-reads `data` resources; writes [destinations](docs/reference/configuration.md#destinations) |
 | `tegata rotate [--yes \| --dry-run] <resource>...` | Creates a new generation (copying the current value to `previous` first, if set) |
 | `tegata settle <resource>...` | Makes `previous` equal to the current value (the end of a rotation) |
 | `tegata prune [<resource>...]` | Deletes what providers created for older generations and disables those versions. Versions are disabled, not destroyed |
 | `tegata set <resource>` | Puts a value by hand (hidden input on a terminal, otherwise stdin). For `manual` resources, or to restore a value |
-| `tegata import <role> <dir>` | Fills secrets that have no value from files you filled in by hand before using tegata |
+| `tegata import <identity> <dir>` | Fills secrets that have no value from files you filled in by hand before using tegata |
+| `tegata migrate` | Prints a configuration written for tegata 0.1 in the current form |
 | `tegata render [--project <p>] <templates> <out>` | Fills `__NAME__` (and `__NAME\|sha256__`, the SHA-256 of the value) in each template file. Names that are missing or unreadable stay as they are and are listed |
 
 The configuration file is `tegata.yaml`, or `-f <file>` / `TEGATA_FILE`. Every key is described in the [configuration reference](docs/reference/configuration.md), and every command in the [command reference](docs/reference/commands.md).

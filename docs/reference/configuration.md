@@ -3,26 +3,27 @@
 tegata reads one YAML file: `tegata.yaml` in the current directory, or the file given with `-f <file>` or `TEGATA_FILE`. Relative paths in it are relative to the directory of the file. Unknown keys are errors, so typos do not go unnoticed.
 
 ```yaml
-store: { ... }      # where secrets are stored (required)
-roles: { ... }      # who reads which secrets (optional)
+stores: { ... }     # where secrets are stored (required; one store for now)
+identities: { ... } # who reads secrets (optional)
 providers: { ... }  # external providers (optional; random, manual and value are built in)
-resources: { ... }  # what to create (required)
+resources: { ... }  # what to create, where to store it, and who reads it (required)
 destinations: { ... } # where copies of secrets are written, such as GitHub Actions secrets (optional)
 ```
 
-A complete example that runs without a cloud account is in [examples/minimal](../../examples/minimal).
+A complete example that runs without a cloud account is in [examples/minimal](../../examples/minimal). Files written for tegata 0.1 use an older form; see [The old form](#the-old-form-and-tegata-migrate).
 
-## `store`
+## `stores`
 
-Set exactly one of `gcp` and `local`.
+A name → a store. Resources refer to the store by this name. Only one store is supported for now. Set exactly one of `gcp` and `local` in it.
 
-### `store.gcp`: Google Cloud Secret Manager
+### `gcp`: Google Cloud Secret Manager
 
 ```yaml
-store:
-  gcp:
-    project: my-project
-    location: us-central1
+stores:
+  main:
+    gcp:
+      project: my-project
+      location: us-central1
 ```
 
 | Key | Description |
@@ -34,7 +35,7 @@ What tegata writes to Secret Manager:
 
 - **Labels** on every secret it manages: `managed-by=tegata` and `tegata-resource=<resource name>`. `tegata status` uses them to list secrets that are no longer in the YAML.
 - **Annotations** on the first secret of each resource (by name order): `tegata-gen-<n>`, one per generation that has not been pruned, holding the version numbers it added and the provider's `state`. Provider `state` is plain text here, which is why providers must never put secret values in it.
-- **Read access**: the members of the `roles/secretmanager.secretAccessor` role on each secret are set to exactly the roles that use it (see [roles](#roles)). Bindings of other roles on the secret are left as they are.
+- **Read access**: the members of the `roles/secretmanager.secretAccessor` role on each secret are set to exactly the members of its [readers](#resources). Bindings of other roles on the secret are left as they are.
 
 Credentials, in this order:
 
@@ -42,37 +43,39 @@ Credentials, in this order:
 2. On a Google Compute Engine VM: the VM's service account, from the metadata server
 3. Otherwise: `gcloud auth print-access-token` (your own login)
 
-To run `apply`, `rotate`, and `prune`, the account needs to create secrets, add and disable versions, update labels and annotations, and set IAM policies on secrets (for example `roles/secretmanager.admin` on the project). `render` needs only `roles/secretmanager.secretAccessor`, which `apply` grants to the roles.
+To run `apply`, `rotate`, and `prune`, the account needs to create secrets, add and disable versions, update labels and annotations, and set IAM policies on secrets (for example `roles/secretmanager.admin` on the project). `render` needs only `roles/secretmanager.secretAccessor`, which `apply` grants to the readers.
 
-### `store.local`: a directory
+### `local`: a directory
 
 ```yaml
-store:
-  local:
-    dir: ./store
+stores:
+  main:
+    local:
+      dir: ./store
 ```
 
 Each secret is one JSON file in `dir`, written with mode 0600, holding all its versions in plain text. Use it to try tegata and in tests. It records read access but does not enforce it.
 
-## `roles`
+## `identities`
 
-A role is a reader, such as a server or a service account, and the templates it fills in.
+An identity is a name for the IAM members that read secrets: the service accounts of the servers that run `tegata render`, an application that reads Secret Manager itself, a CI workflow. Resources give read access by naming identities in `readers`; an identity grants nothing by itself.
 
 ```yaml
-roles:
-  app:
-    member: serviceAccount:app-vm@my-project.iam.gserviceaccount.com
-    templates: ./templates/app
+identities:
+  app:                       # a list of members
+    - serviceAccount:app-vm@my-project.iam.gserviceaccount.com
+    - serviceAccount:app-vm-2@my-project.iam.gserviceaccount.com
+  edge:                      # or members and the templates it renders
+    members: [serviceAccount:edge-vm@my-project.iam.gserviceaccount.com]
+    templates: ./templates/edge
 ```
 
 | Key | Description |
 | --- | --- |
-| `member` | Who gets read access, in IAM member form (`serviceAccount:...`, `user:...`, `group:...`) |
-| `templates` | A directory of template files. Only the files directly in it count; subdirectories are ignored. Symbolic links to files are followed, so roles can share a template |
+| `members` | IAM members, at least one: `serviceAccount:...`, `user:...`, `group:...` |
+| `templates` | Optional. The directory of templates this identity renders. Only the files directly in it count; symbolic links to files are followed. `tegata check` compares them with what the identity can read, and `tegata import` matches files against them |
 
-**Read access follows the templates.** A role can read a secret exactly when one of its template files contains that secret's name (`__NAME__` or `__NAME|sha256__`). Adding a name to a template and running `tegata apply` grants access; removing it and running `apply` again takes it away. A secret no template uses has no readers.
-
-`tegata check` reports names in templates that no resource makes.
+For an identity with `templates`, `tegata check` reports a name in the templates that no resource makes, or that the identity cannot read (an error), and a secret the identity can read but its templates do not use (a warning). Identities without `templates`, such as applications that read Secret Manager directly, are not compared.
 
 ## `providers`
 
@@ -110,15 +113,25 @@ If the variable is not set (or is empty) and the credential is not optional, teg
 
 ## `resources`
 
-A resource is one thing a provider makes, and the secrets that hold its outputs.
+A resource is one thing a provider makes, the secrets that hold its outputs, and who reads them.
 
 ```yaml
 resources:
   session_key:
     provider: random
     config: { bytes: 32 }
-    secrets: { SESSION_KEY: value }
-    previous: PREVIOUS_SESSION_KEY
+    stores:
+      main:
+        - { name: SESSION_KEY, readers: [app] }
+    previous: { name: PREVIOUS_SESSION_KEY }
+  releases_read:
+    provider: cloudflare
+    type: api_token
+    config: { ... }
+    stores:
+      main:
+        - { output: id, name: RELEASES_ACCESS_KEY_ID, readers: [app] }
+        - { output: r2_secret_access_key, name: RELEASES_SECRET_ACCESS_KEY, readers: [app, edge] }
 ```
 
 The resource's name (`session_key`) may use lowercase letters, digits, `-`, and `_`, up to 63 characters (it is stored as a label value).
@@ -128,8 +141,16 @@ The resource's name (`session_key`) may use lowercase letters, digits, `-`, and 
 | `provider` | `random`, `manual`, `value`, or a name under `providers` |
 | `type` | The provider's resource type (`api_token`, ...). Leave it out for the built-in providers |
 | `config` | Settings for this resource, passed to the provider as `config` |
-| `secrets` | Secret name → the provider output stored in it. At least one |
-| `previous` | Optional. A secret that keeps the value before the last rotation, so services can accept both the old and the new value for a while (see [Rotating secrets](../guides/rotating-secrets.md#keys-your-service-checks-rotate-settle-prune)). It holds the value of the resource's first secret by name order |
+| `stores.<store>` | The secrets in that store: a list of entries, at least one (see below) |
+| `previous` | Optional. `{ name: <secret> }`: a secret in the same store that keeps the value before the last rotation, so services can accept both the old and the new value for a while (see [Rotating secrets](../guides/rotating-secrets.md#keys-your-service-checks-rotate-settle-prune)). It holds the value of the resource's first secret by name order, and is read by the same readers |
+
+Each entry under `stores.<store>`:
+
+| Key | Description |
+| --- | --- |
+| `output` | The provider output stored in this secret. Default `value`, which is what `random`, `manual` and `cloudflare/tunnel_token` return. See [providers](providers.md) for the outputs of each type |
+| `name` | The secret's name in the store |
+| `readers` | Identities that can read it. Default: none. Read access is exactly the members of these identities: adding one and running `tegata apply` grants access, removing it and running `apply` takes it away |
 
 Secret names may use letters, digits, `-`, and `_`, up to 255 characters. To use a secret in a template, its name must start with an uppercase letter and contain only uppercase letters, digits, and `_` (for example `SESSION_KEY`). Each secret belongs to exactly one resource.
 
@@ -139,7 +160,7 @@ Secret names may use letters, digits, `-`, and `_`, up to 255 characters. To use
 
 | Provider | Config | Outputs |
 | --- | --- | --- |
-| `random` | `bytes`: 8 to 256, default 32 | Random bytes from the operating system, as lowercase hex (so 32 bytes become 64 characters). Every output name gets the same value, so `secrets: { KEY: value }` works with any output name |
+| `random` | `bytes`: 8 to 256, default 32 | Random bytes from the operating system, as lowercase hex (so 32 bytes become 64 characters). Every output name gets the same value, so `output` can be left out |
 | `manual` | none | A value you put with `tegata set <resource>`. `apply` creates the secret but not the value |
 | `value` | A map of output name → string | The strings themselves. For non-secret values that templates need next to secrets (a sender address, a bucket name). Read again on every `apply` |
 
@@ -180,7 +201,7 @@ If writing fails (no permission, GitHub unreachable), the value is still in the 
 
 **Token:** `TEGATA_GITHUB_TOKEN`, or else the login of the `gh` command-line tool (`gh auth token`). A fine-grained token needs the repository permission "Secrets" (for repository secrets) or "Environments" (for environment secrets), with write access, on the repositories it delivers to. It is a separate variable from `GITHUB_TOKEN`, which `tegata init` uses to read releases, so that a token that can write secrets is not used by accident.
 
-If you run on Google Cloud, consider also letting workflows read Secret Manager directly through Workload Identity Federation: make the workflow's identity a role's `member`, and no copy of the secret is kept on GitHub.
+If you run on Google Cloud, consider also letting workflows read Secret Manager directly through Workload Identity Federation: make the workflow's identity a member of an [identity](#identities) that reads the secret, and no copy of the secret is kept on GitHub.
 
 ## Templates
 
@@ -212,6 +233,33 @@ Each time a managed resource makes new values, the values form a **generation**:
 The steps of a rotation, for each kind of value: [Rotating secrets](../guides/rotating-secrets.md).
 
 **Values that stop working at once.** Some providers declare types that can hold only one value (a database user's password, a Cloudflare Tunnel's secret): making a new one breaks the old value immediately. Before `apply` or `rotate` makes such a value, tegata shows what will break and who reads it, and asks you to type `yes`. `--yes` skips the question (for scripts); `--dry-run` only shows what would be made. Outside a terminal, without `--yes`, tegata refuses.
+
+## The old form and `tegata migrate`
+
+Files written for tegata 0.1 use `store`, `roles` and `resources.*.secrets`. tegata still reads them, with a warning, and read access then comes from the templates, as it did:
+
+```yaml
+store: { local: { dir: ./store } }
+roles:
+  app:
+    member: serviceAccount:app-vm@my-project.iam.gserviceaccount.com
+    templates: ./templates/app      # app reads every secret named in these templates
+resources:
+  session_key:
+    provider: random
+    secrets: { SESSION_KEY: value } # secret name: provider output
+    previous: PREVIOUS_SESSION_KEY
+```
+
+A file uses one form or the other; mixing them is an error. `tegata migrate` prints the file in the current form, with each secret's `readers` filled in from the templates (what `apply` grants today), so `apply` afterwards changes nothing in the store. Comments are not kept. In the current form a `previous` secret is read by the readers of the value it copies; if the templates give them different readers, `migrate` stops and names them, so you can make the templates agree first.
+
+```sh
+tegata migrate > tegata.new.yaml
+diff tegata.yaml tegata.new.yaml
+mv tegata.new.yaml tegata.yaml
+tegata check
+tegata apply --dry-run
+```
 
 ## `tegata.lock`
 

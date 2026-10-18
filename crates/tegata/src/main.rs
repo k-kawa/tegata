@@ -106,7 +106,14 @@ enum Command {
     Prune { resources: Vec<String> },
     /// Fill secrets that have no value from files filled in by hand (for moving to tegata)
     #[command(after_help = command_help!("import"))]
-    Import { role: String, dir: PathBuf },
+    Import {
+        /// An identity with `templates`; the files in <DIR> are matched against them
+        identity: String,
+        dir: PathBuf,
+    },
+    /// Print the configuration in the current form (for files in the old form: store, roles, secrets)
+    #[command(after_help = command_help!("migrate"))]
+    Migrate,
     /// Fill `__NAME__` in templates with values from the store (on servers; does not read the configuration)
     #[command(after_help = command_help!("render"))]
     Render {
@@ -157,6 +164,7 @@ impl Command {
             Command::Settle { .. } => command_docs!("settle"),
             Command::Prune { .. } => command_docs!("prune"),
             Command::Import { .. } => command_docs!("import"),
+            Command::Migrate => command_docs!("migrate"),
             Command::Render { .. } => command_docs!("render"),
         }
     }
@@ -208,6 +216,13 @@ async fn run(cli: Cli) -> Result<(), Failed> {
         error,
         docs: Some(docs!("reference/configuration.md")),
     })?;
+    if let Command::Migrate = &cli.command {
+        print!("{}", loaded.migrate()?);
+        return Ok(());
+    }
+    for w in &loaded.warnings {
+        eprintln!("warning: {}: {w}", cli.file.display());
+    }
     if let Command::Init { upgrade } = &cli.command {
         // TEGATA_PROVIDER_MIRROR: a local copy of releases, for machines without internet access
         let lines = match std::env::var_os("TEGATA_PROVIDER_MIRROR") {
@@ -231,12 +246,15 @@ async fn run(cli: Cli) -> Result<(), Failed> {
     let engine = Engine::new(&loaded, store.as_ref());
     match cli.command {
         Command::Check => {
-            let problems = engine.check().await?;
-            for p in &problems {
+            let checked = engine.check().await?;
+            for w in &checked.warnings {
+                println!("warning: {w}");
+            }
+            for p in &checked.problems {
                 println!("{p}");
             }
-            if !problems.is_empty() {
-                return Err(anyhow::anyhow!("{} problems", problems.len()).into());
+            if !checked.problems.is_empty() {
+                return Err(anyhow::anyhow!("{} problems", checked.problems.len()).into());
             }
             println!("ok");
         }
@@ -254,8 +272,10 @@ async fn run(cli: Cli) -> Result<(), Failed> {
         Command::Set { resource } => engine.set(&resource).await?,
         Command::Settle { resources } => engine.settle(&resources).await?,
         Command::Prune { resources } => engine.prune(&resources).await?,
-        Command::Import { role, dir } => engine.import(&role, &dir).await?,
-        Command::Render { .. } | Command::Init { .. } => unreachable!("handled above"),
+        Command::Import { identity, dir } => engine.import(&identity, &dir).await?,
+        Command::Render { .. } | Command::Init { .. } | Command::Migrate => {
+            unreachable!("handled above")
+        }
     }
     Ok(())
 }
