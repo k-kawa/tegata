@@ -464,4 +464,19 @@ mod tests {
         let err = public_key("x", &other).unwrap_err().to_string();
         assert!(err.contains("set public_key"), "{err}");
     }
+
+    /// The signing script and SECURITY.md carry the same key as the code
+    #[test]
+    fn the_official_key_is_the_same_everywhere() {
+        let key = OFFICIAL_PUBLIC_KEY.expect("the official key");
+        for (name, text) in [
+            (
+                "tools/sign-release.sh",
+                include_str!("../../../tools/sign-release.sh"),
+            ),
+            ("SECURITY.md", include_str!("../../../SECURITY.md")),
+        ] {
+            assert!(text.contains(key), "{name} does not have the official key");
+        }
+    }
 }

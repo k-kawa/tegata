@@ -4,7 +4,7 @@
 
 Everything is declared in one YAML file. No server to run, no Kubernetes required.
 
-> **Status:** early. tegata is used in production by its author, but the configuration format and the provider protocol may still change before 1.0. The only store today is Google Cloud Secret Manager.
+> **Status:** early. The code tegata grew out of manages the secrets of its author's production service, but the configuration format and the provider protocol may still change before 1.0. The only store today is Google Cloud Secret Manager.
 
 ## Why
 
@@ -139,7 +139,7 @@ providers:
     command: ./bin/my-provider          # relative to this YAML if it has a `/`, otherwise from PATH
 ```
 
-> The official provider releases are not published yet. Until then, build the providers yourself and use `command`, or publish them from your own repository with your own key. The official releases will be signed with the key in [SECURITY.md](SECURITY.md#release-signing-key), which tegata has built in.
+> The official releases are signed with the key in [SECURITY.md](SECURITY.md#release-signing-key), which tegata has built in.
 
 `tegata init`:
 
@@ -161,13 +161,20 @@ Publishing your own provider: see [releasing](docs/releasing.md).
 
 ## Install
 
-Build from source (Rust 1.87 or later):
+Prebuilt binaries for Linux (x86_64, aarch64; static, no dependencies) and macOS (x86_64, Apple Silicon) are on the [releases page](https://github.com/k-kawa/tegata/releases), named `tegata_<version>_<os>_<arch>`. Each release has a `SHA256SUMS` signed with the [release signing key](SECURITY.md#release-signing-key), and GitHub [artifact attestations](https://docs.github.com/en/actions/concepts/security/artifact-attestations) that show the files were built by this repository's release workflow:
 
 ```sh
-cargo install --path crates/tegata
+v=0.1.0 p=linux_x86_64
+gh release download v$v -R k-kawa/tegata -p "tegata_${v}_${p}" -p SHA256SUMS -p SHA256SUMS.minisig
+minisign -V -P RWS+RgaPKYHijXCDQ/JCehzLyohjXERYxShqSb6lS71/MHaCS3agTxkB -m SHA256SUMS
+grep " tegata_${v}_${p}$" SHA256SUMS | shasum -a 256 -c
+gh attestation verify "tegata_${v}_${p}" -R k-kawa/tegata    # optional
+install -m 0755 "tegata_${v}_${p}" /usr/local/bin/tegata
 ```
 
-Then let `tegata init` install the providers (see [Installing providers](#installing-providers)), or `cargo install` them too. Prebuilt binaries of tegata itself are planned.
+Then let `tegata init` install the providers (see [Installing providers](#installing-providers)).
+
+Or build from source (Rust 1.87 or later): `cargo install --path crates/tegata`, and the same for each provider you use.
 
 ## Documentation
 
