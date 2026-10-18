@@ -1,0 +1,81 @@
+name: release
+
+# Pushing a tag v<version> builds the binaries on GitHub-hosted runners, attests where they were
+# built, and puts them with SHA256SUMS in a draft release. The maintainer then signs SHA256SUMS
+# locally and publishes the release (tools/sign-release.sh). The signing key never reaches CI.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    if: ${{ !github.event.repository.private }}
+    strategy:
+      matrix:
+        include:
+          - { runner: ubuntu-24.04, target: x86_64-unknown-linux-musl }
+          - { runner: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl }
+          - { runner: macos-15, target: aarch64-apple-darwin }
+          - { runner: macos-15, target: x86_64-apple-darwin }
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    env:
+      TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check that the tag matches the crate versions
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          for f in crates/*/Cargo.toml; do
+            grep -q "^version = \"$version\"$" "$f" || { echo "$f is not version $version" >&2; exit 1; }
+          done
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+      - name: Install musl
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+          echo "CC_${TARGET//-/_}=musl-gcc" >> "$GITHUB_ENV"
+      - run: rustup toolchain install stable --profile minimal --target "$TARGET"
+      - run: cargo build --release --locked --target "$TARGET" --workspace --bins
+      - run: tools/package.sh "$TARGET" "$VERSION" dist
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/*
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dist-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  draft:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: dist-*
+          merge-multiple: true
+          path: dist
+      - name: Make SHA256SUMS and a draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd dist
+          sha256sum tegata* > SHA256SUMS
+          cat SHA256SUMS
+          gh release create "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" --draft --verify-tag \
+            --title "$GITHUB_REF_NAME" \
+            --notes "Not signed yet: the maintainer signs SHA256SUMS and publishes this release." \
+            tegata* SHA256SUMS

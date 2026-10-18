@@ -63,6 +63,16 @@ gh release create v${version} tegata-provider-* SHA256SUMS SHA256SUMS.minisig --
 
 You can check the release the way users will before announcing it: put the files in a mirror directory (`<dir>/github.com/<owner>/<repo>/<version>/`) and run `TEGATA_PROVIDER_MIRROR=<dir> tegata init` with a test configuration.
 
+## How the official releases are made
+
+The official releases of this repository (tegata and every provider in it) are built by GitHub Actions, not on a maintainer's machine, and signed by the maintainer:
+
+1. Bump `version` in every `crates/*/Cargo.toml`, merge, and push a tag `v<version>`.
+2. [`.github/workflows/release.yml`](../.github/workflows/release.yml) builds the binaries on GitHub-hosted runners (Linux x86_64 and aarch64 with musl; macOS on Apple Silicon for both architectures), adds [artifact attestations](https://docs.github.com/en/actions/concepts/security/artifact-attestations), writes `SHA256SUMS`, and puts everything in a **draft** release.
+3. The maintainer runs `tools/sign-release.sh v<version>` on the machine that holds the signing key. It downloads the draft's files, checks them against `SHA256SUMS` and their attestations, signs `SHA256SUMS`, checks the signature with the official key, uploads `SHA256SUMS.minisig`, and publishes the release.
+
+The signing key never reaches CI, so a compromised workflow can build files but cannot sign them.
+
 ## Never replace the files of a release
 
 `tegata.lock` records the SHA-256 of every file. If the files of a published version change, `tegata init` stops with an error on every machine that locked that version. To fix a broken release, publish a new version.
