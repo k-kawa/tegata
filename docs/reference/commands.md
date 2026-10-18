@@ -5,14 +5,14 @@ Every command of `tegata`, its options, and what it prints. The outputs below we
 | Command | Synopsis | Changes the store | Runs providers |
 | --- | --- | --- | --- |
 | [`init`](#tegata-init) | `tegata init [--upgrade]` | no | no (installs them) |
-| [`check`](#tegata-check) | `tegata check` | no | `describe` |
+| [`check`](#tegata-check) | `tegata check [<identity> <templates>]` | no | `describe` |
 | [`status`](#tegata-status) | `tegata status` | no | `describe` |
 | [`apply`](#tegata-apply) | `tegata apply [--yes \| --dry-run]` | yes | `create`, `read` |
 | [`rotate`](#tegata-rotate) | `tegata rotate [--yes \| --dry-run] <resource>...` | yes | `create` |
 | [`settle`](#tegata-settle) | `tegata settle <resource>...` | yes | no |
 | [`prune`](#tegata-prune) | `tegata prune [<resource>...]` | yes | `delete` |
 | [`set`](#tegata-set) | `tegata set <resource>` | yes | no |
-| [`import`](#tegata-import) | `tegata import <identity> <dir>` | yes | no |
+| [`import`](#tegata-import) | `tegata import <templates> <dir>` | yes | no |
 | [`migrate`](#tegata-migrate) | `tegata migrate` | no | no |
 | [`render`](#tegata-render) | `tegata render [--project <p> \| --store-dir <d>] <templates> <out>` | no | no |
 
@@ -85,18 +85,23 @@ TEGATA_PROVIDER_MIRROR=/mnt/mirror tegata init   # a machine without internet ac
 ## tegata check
 
 ```text
-tegata check
+tegata check [<identity> <templates>]
 ```
 
-Checks the configuration and changes nothing: the YAML loads, every provider answers `describe` and has the resource's `type`, and for every identity with `templates`, each `__NAME__` in them is made by some resource and readable by that identity. Prints `ok`, or one problem per line and exits 1. Secrets an identity can read but its templates do not use are listed as warnings, which do not fail the check.
+Checks the configuration and changes nothing: the YAML loads, and every provider answers `describe` and has the resource's `type`. Prints `ok`, or one problem per line and exits 1.
+
+With an identity and a template directory (the one a server running as that identity gives to `tegata render`), it also checks that every `__NAME__` in the templates is made by some resource and readable by that identity. Secrets the identity can read but the templates do not use are listed as warnings, which do not fail the check. Run it once per identity, for example in CI next to the deploy configuration. The directory is relative to the current directory, as for `render`.
 
 ```text
-$ tegata check
+$ tegata check edge templates/edge
 warning: identity edge: can read MAIL, which its templates do not use
-identity app: NOT_MADE is in the templates but no resource makes it
 identity edge: KEY is in the templates but edge cannot read it (add edge to its readers)
+identity edge: NOT_MADE is in the templates but no resource makes it
 error: 2 problems
+see: https://github.com/k-kawa/tegata/blob/main/docs/reference/commands.md#tegata-check
 ```
+
+For a file in the [old form](configuration.md#the-old-form-and-tegata-migrate), `check` also compares every role's `templates`, since they decide what the role reads.
 
 ## tegata status
 
@@ -215,13 +220,13 @@ op read op://infra/admin/password | tegata set admin_password
 ## tegata import
 
 ```text
-tegata import <identity> <dir>
+tegata import <templates> <dir>
 ```
 
-For moving to tegata. The identity must have `templates`. `<dir>` holds files with the same names as those templates, filled in by hand before tegata (for example the configuration files your servers use today). tegata matches each file against its template, takes the values out, and puts them into the secrets that have no value yet. Secrets that already have one are skipped (`already has a value; skipped`). `prune` never deletes imported generations on the provider.
+For moving to tegata. `<dir>` holds files with the same names as the templates in `<templates>`, filled in by hand before tegata (for example the configuration files your servers use today). tegata matches each file against its template, takes the values out, and puts them into the secrets that have no value yet. Secrets that already have one are skipped (`already has a value; skipped`). `prune` never deletes imported generations on the provider.
 
 ```sh
-tegata import app /etc/app
+tegata import templates/app /etc/app
 ```
 
 ## tegata migrate
@@ -232,10 +237,13 @@ tegata migrate
 
 Prints the configuration in the current form to standard output, and changes nothing. For a file in the [old form](configuration.md#the-old-form-and-tegata-migrate) (`store`, `roles`, `resources.*.secrets`), each secret's `readers` are filled in from the templates, which is what `apply` grants today, so `apply` after migrating changes nothing in the store. Comments are not kept. Other commands still read an old-form file, with a warning that names `tegata migrate`.
 
-```sh
-tegata migrate > tegata.new.yaml && diff tegata.yaml tegata.new.yaml
-mv tegata.new.yaml tegata.yaml
-tegata check
+```text
+$ tegata migrate > tegata.new.yaml
+# read access no longer comes from templates; to check that each identity can read its templates:
+#   tegata check app ./templates/app
+$ diff tegata.yaml tegata.new.yaml
+$ mv tegata.new.yaml tegata.yaml
+$ tegata check app ./templates/app
 ```
 
 ## tegata render

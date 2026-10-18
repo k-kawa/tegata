@@ -270,8 +270,10 @@ fn the_minimal_example_works() {
             .to_owned()
     };
 
+    let templates = dir.join("templates/app");
     for (args, stdin) in [
         (vec!["check"], None),
+        (vec!["check", "app", templates.to_str().unwrap()], None),
         (vec!["apply"], None),
         (vec!["set", "admin_password"], Some("correct horse\n")),
         (vec!["status"], None),
@@ -427,7 +429,7 @@ resources:
     assert!(ok && out.ends_with("ok\n"), "{out}");
 }
 
-/// In the current form, readers decide access, and check compares them with the templates
+/// In the current form, readers decide access, and check compares them with templates it is given
 #[test]
 fn readers_decide_access_and_check_compares_templates() {
     let tmp = tempfile::tempdir().unwrap();
@@ -441,7 +443,7 @@ stores:
   main: { local: { dir: store } }
 identities:
   app: [serviceAccount:app-1@x, serviceAccount:app-2@x]
-  edge: { members: [serviceAccount:edge@x], templates: edge }
+  edge: [serviceAccount:edge@x]
 resources:
   key:
     provider: random
@@ -463,8 +465,12 @@ resources:
 "#,
     )
     .unwrap();
-    // edge's template uses KEY, which only app reads; and edge reads MAIL, which it does not use
+    // Without templates, check looks at the configuration and providers only
     let (ok, out) = tegata(dir, &["check"], None);
+    assert!(ok && out.ends_with("ok\n"), "{out}");
+    // edge's template uses KEY, which only app reads; and edge reads MAIL, which it does not use
+    let edge = dir.join("edge");
+    let (ok, out) = tegata(dir, &["check", "edge", edge.to_str().unwrap()], None);
     assert!(!ok, "{out}");
     assert!(
         out.contains("identity edge: KEY is in the templates but edge cannot read it (add edge to its readers)"),
@@ -503,8 +509,22 @@ resources:
         "{out}"
     );
 
-    // import matches against an identity's templates
-    let (ok, out) = tegata(dir, &["import", "app", dir.to_str().unwrap()], None);
+    let (ok, out) = tegata(dir, &["check", "nobody", edge.to_str().unwrap()], None);
     assert!(!ok);
-    assert!(out.contains("identity app has no templates"), "{out}");
+    assert!(out.contains("no identity nobody in the config"), "{out}");
+    let (ok, _) = tegata(dir, &["check", "edge"], None);
+    assert!(!ok, "an identity needs templates");
+
+    // import takes the values out of files filled from the templates
+    let filled = dir.join("filled");
+    std::fs::create_dir_all(&filled).unwrap();
+    std::fs::write(filled.join("tunnel.env"), "T=tunnel-token\nK=ignored\n").unwrap();
+    let (ok, out) = tegata(
+        dir,
+        &["import", edge.to_str().unwrap(), filled.to_str().unwrap()],
+        None,
+    );
+    assert!(ok, "{out}");
+    assert!(out.contains("TUNNEL: version 1 (imported)"), "{out}");
+    assert!(out.contains("KEY: already has a value; skipped"), "{out}");
 }

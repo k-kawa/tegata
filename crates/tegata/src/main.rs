@@ -72,9 +72,15 @@ enum Command {
         #[arg(long)]
         upgrade: bool,
     },
-    /// Check the configuration, providers, and the names used in templates
+    /// Check the configuration and providers; with an identity and templates, also that the identity can read every name in them
     #[command(after_help = command_help!("check"))]
-    Check,
+    Check {
+        /// An identity in the config
+        #[arg(requires = "templates")]
+        identity: Option<String>,
+        /// The templates it renders (a directory, as given to `tegata render`)
+        templates: Option<PathBuf>,
+    },
     /// Show each resource and secret: generations, enabled versions, readers
     #[command(after_help = command_help!("status"))]
     Status,
@@ -107,8 +113,9 @@ enum Command {
     /// Fill secrets that have no value from files filled in by hand (for moving to tegata)
     #[command(after_help = command_help!("import"))]
     Import {
-        /// An identity with `templates`; the files in <DIR> are matched against them
-        identity: String,
+        /// The templates the files in <DIR> were filled from (a directory)
+        templates: PathBuf,
+        /// Files with the same names as the templates, filled in by hand
         dir: PathBuf,
     },
     /// Print the configuration in the current form (for files in the old form: store, roles, secrets)
@@ -156,7 +163,7 @@ impl Command {
     fn docs(&self) -> &'static str {
         match self {
             Command::Init { .. } => command_docs!("init"),
-            Command::Check => command_docs!("check"),
+            Command::Check { .. } => command_docs!("check"),
             Command::Status => command_docs!("status"),
             Command::Apply { .. } => command_docs!("apply"),
             Command::Rotate { .. } => command_docs!("rotate"),
@@ -217,7 +224,16 @@ async fn run(cli: Cli) -> Result<(), Failed> {
         docs: Some(docs!("reference/configuration.md")),
     })?;
     if let Command::Migrate = &cli.command {
-        print!("{}", loaded.migrate()?);
+        let (yaml, checks) = loaded.migrate()?;
+        print!("{yaml}");
+        if !checks.is_empty() {
+            eprintln!(
+                "# read access no longer comes from templates; to check that each identity can read its templates:"
+            );
+            for c in checks {
+                eprintln!("#   {c}");
+            }
+        }
         return Ok(());
     }
     for w in &loaded.warnings {
@@ -245,8 +261,12 @@ async fn run(cli: Cli) -> Result<(), Failed> {
     let store = tegata::open_store(&loaded).await?;
     let engine = Engine::new(&loaded, store.as_ref());
     match cli.command {
-        Command::Check => {
-            let checked = engine.check().await?;
+        Command::Check {
+            identity,
+            templates,
+        } => {
+            let pair = identity.as_deref().zip(templates.as_deref());
+            let checked = engine.check(pair).await?;
             for w in &checked.warnings {
                 println!("warning: {w}");
             }
@@ -272,7 +292,7 @@ async fn run(cli: Cli) -> Result<(), Failed> {
         Command::Set { resource } => engine.set(&resource).await?,
         Command::Settle { resources } => engine.settle(&resources).await?,
         Command::Prune { resources } => engine.prune(&resources).await?,
-        Command::Import { identity, dir } => engine.import(&identity, &dir).await?,
+        Command::Import { templates, dir } => engine.import(&templates, &dir).await?,
         Command::Render { .. } | Command::Init { .. } | Command::Migrate => {
             unreachable!("handled above")
         }

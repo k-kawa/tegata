@@ -21,9 +21,7 @@ stores:
       dir: ./store                    # plain-text JSON files: for trying tegata only
 
 identities:
-  app:
-    members: [serviceAccount:app@example.iam.gserviceaccount.com]
-    templates: ./templates/app        # check compares them with what app can read
+  app: [serviceAccount:app@example.iam.gserviceaccount.com]
 
 resources:
   session_key:
@@ -46,7 +44,7 @@ resources:
         - { output: from, name: MAIL_FROM, readers: [app] }
 ```
 
-`templates/app/app.env` is the file a server running as `app` fills in. `tegata check` makes sure `app` can read every name in it:
+`templates/app/app.env` is the file a server running as `app` fills in. `tegata check app templates/app` makes sure `app` can read every name in it:
 
 ```text
 SESSION_KEY=__SESSION_KEY__
@@ -58,7 +56,7 @@ MAIL_FROM=__MAIL_FROM__
 ## 2. Check and apply
 
 ```text
-$ tegata check
+$ tegata check app templates/app
 ok
 $ tegata apply
 created secret ADMIN_PASSWORD
@@ -137,9 +135,7 @@ Between `rotate` and `settle`, a service that accepts both `SESSION_KEY` and `PR
           project: my-project
           location: us-central1
     identities:
-      app:
-        members: [serviceAccount:app-vm@my-project.iam.gserviceaccount.com]
-        templates: ./templates/app
+      app: [serviceAccount:app-vm@my-project.iam.gserviceaccount.com]
     ```
 
 2. Run `tegata apply` with an account that can administer Secret Manager in the project (your `gcloud` login is used).

@@ -62,20 +62,15 @@ An identity is a name for the IAM members that read secrets: the service account
 
 ```yaml
 identities:
-  app:                       # a list of members
+  app:
     - serviceAccount:app-vm@my-project.iam.gserviceaccount.com
     - serviceAccount:app-vm-2@my-project.iam.gserviceaccount.com
-  edge:                      # or members and the templates it renders
-    members: [serviceAccount:edge-vm@my-project.iam.gserviceaccount.com]
-    templates: ./templates/edge
+  edge: [serviceAccount:edge-vm@my-project.iam.gserviceaccount.com]
 ```
 
-| Key | Description |
-| --- | --- |
-| `members` | IAM members, at least one: `serviceAccount:...`, `user:...`, `group:...` |
-| `templates` | Optional. The directory of templates this identity renders. Only the files directly in it count; symbolic links to files are followed. `tegata check` compares them with what the identity can read, and `tegata import` matches files against them |
+Each identity is a list of IAM members, at least one: `serviceAccount:...`, `user:...`, `group:...`.
 
-For an identity with `templates`, `tegata check` reports a name in the templates that no resource makes, or that the identity cannot read (an error), and a secret the identity can read but its templates do not use (a warning). Identities without `templates`, such as applications that read Secret Manager directly, are not compared.
+Which templates a server renders is decided where you deploy it, not here. To check that an identity can read every name in the templates it renders, give both to [`tegata check`](commands.md#tegata-check): `tegata check edge ./templates/edge`.
 
 ## `providers`
 
@@ -251,7 +246,7 @@ resources:
     previous: PREVIOUS_SESSION_KEY
 ```
 
-A file uses one form or the other; mixing them is an error. `tegata migrate` prints the file in the current form, with each secret's `readers` filled in from the templates (what `apply` grants today), so `apply` afterwards changes nothing in the store. Comments are not kept. In the current form a `previous` secret is read by the readers of the value it copies; if the templates give them different readers, `migrate` stops and names them, so you can make the templates agree first.
+A file uses one form or the other; mixing them is an error. `tegata migrate` prints the file in the current form, with each secret's `readers` filled in from the templates (what `apply` grants today), so `apply` afterwards changes nothing in the store. Comments are not kept, and neither are the roles' `templates`: `migrate` prints on standard error the `tegata check <identity> <templates>` commands that compare them, for your CI or deploy scripts. In the current form a `previous` secret is read by the readers of the value it copies; if the templates give them different readers, `migrate` stops and names them, so you can make the templates agree first.
 
 ```sh
 tegata migrate > tegata.new.yaml

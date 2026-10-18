@@ -31,9 +31,7 @@ stores:
       location: us-central1        # where secret replicas live (user-managed replication)
 
 identities:                        # who reads secrets: names for IAM members
-  app:
-    members: [serviceAccount:app-vm@my-project.iam.gserviceaccount.com]
-    templates: ./templates/app     # optional: what app renders; `tegata check` compares it with what app reads
+  app: [serviceAccount:app-vm@my-project.iam.gserviceaccount.com]
 
 providers:                         # external providers (random, manual and value are built in)
   cloudflare:
@@ -75,7 +73,7 @@ RELEASES_SECRET_ACCESS_KEY=__RELEASES_SECRET_ACCESS_KEY__
 
 ```sh
 tegata init                  # install the providers, pinned in tegata.lock
-tegata check                 # providers, and templates vs. what each identity can read
+tegata check app templates/app # providers, and app can read every name in templates/app
 tegata apply                 # containers, read access, missing values
 tegata status                # generations, enabled versions, readers
 
@@ -97,14 +95,14 @@ tegata prune session_key     # disable the old versions
 | Command | What it does |
 | --- | --- |
 | `tegata init [--upgrade]` | Installs the providers that have a `source`, and writes `tegata.lock`. See [Installing providers](#installing-providers) |
-| `tegata check` | Checks the configuration, the providers, and that every `__NAME__` in an identity's templates is made by some resource and readable by that identity |
+| `tegata check [<identity> <templates>]` | Checks the configuration and the providers; with an identity and templates, also that every `__NAME__` in them is made by some resource and readable by that identity |
 | `tegata status` | Shows each resource and secret: generations, enabled versions, which identities read it. Also lists tegata secrets that are no longer in the YAML |
 | `tegata apply [--yes \| --dry-run]` | Creates secret containers, labels and read access; creates values that do not exist yet; re-reads `data` resources; writes [destinations](docs/reference/configuration.md#destinations) |
 | `tegata rotate [--yes \| --dry-run] <resource>...` | Creates a new generation (copying the current value to `previous` first, if set) |
 | `tegata settle <resource>...` | Makes `previous` equal to the current value (the end of a rotation) |
 | `tegata prune [<resource>...]` | Deletes what providers created for older generations and disables those versions. Versions are disabled, not destroyed |
 | `tegata set <resource>` | Puts a value by hand (hidden input on a terminal, otherwise stdin). For `manual` resources, or to restore a value |
-| `tegata import <identity> <dir>` | Fills secrets that have no value from files you filled in by hand before using tegata |
+| `tegata import <templates> <dir>` | Fills secrets that have no value from files you filled in by hand before using tegata |
 | `tegata migrate` | Prints a configuration written for tegata 0.1 in the current form |
 | `tegata render [--project <p>] <templates> <out>` | Fills `__NAME__` (and `__NAME\|sha256__`, the SHA-256 of the value) in each template file. Names that are missing or unreadable stay as they are and are listed |
 
