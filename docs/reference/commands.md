@@ -148,7 +148,7 @@ Makes the store match the YAML:
 - moves the secrets of a renamed resource to the resource that now lists them;
 - makes the first generation of every managed resource that has no value yet (`manual` resources wait for `tegata set`);
 - reads data resources again, adding a version where an output changed and disabling the older ones;
-- writes undelivered or changed values to destinations, and removes the secrets tegata delivered that are no longer configured.
+- writes undelivered or changed values to destinations, and removes the deliveries the configuration no longer lists, for the secrets it declares in this environment ([removing a resource, and sharing a store](configuration.md#removing-a-resource-and-sharing-a-store)).
 
 A failure in one resource does not stop the others; the command ends with `failed: <names>`.
 

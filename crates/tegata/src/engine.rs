@@ -245,6 +245,34 @@ impl<'a> Engine<'a> {
         labels
     }
 
+    /// The names of the secrets this configuration's resources declare (including `previous`)
+    fn declared(&self) -> BTreeSet<String> {
+        self.loaded
+            .config
+            .resources
+            .values()
+            .flat_map(Resource::all_secrets)
+            .collect()
+    }
+
+    /// Whether a secret in the store belongs to this configuration and environment: managed by
+    /// tegata, not labeled with another environment (as in `ensure_secret`), and declared by one of
+    /// this configuration's resources. Other configurations and environments may share the store,
+    /// so only these secrets' deliveries are ever removed
+    fn owns(&self, declared: &BTreeSet<String>, secret: &str, meta: &SecretMeta) -> bool {
+        meta.labels.get(MANAGED_BY).map(String::as_str) == Some("tegata")
+            && self.other_environment(meta).is_none()
+            && declared.contains(secret)
+    }
+
+    /// The environment a secret is labeled with, when it is not the one being worked on.
+    /// Such a secret belongs to another environment that uses the same store: never touch it
+    fn other_environment<'m>(&self, meta: &'m SecretMeta) -> Option<&'m String> {
+        meta.labels
+            .get(ENV)
+            .filter(|e| Some(*e) != self.loaded.config.environment.as_ref())
+    }
+
     /// In an environment with `confirm: true`, says what the command will do there and asks for
     /// the environment's name (`--yes` skips the question). Elsewhere, and for `--dry-run`, nothing
     fn confirm_environment(&self, what: &str) -> anyhow::Result<()> {
@@ -385,7 +413,7 @@ impl<'a> Engine<'a> {
                 println!("created secret {secret}");
             }
             Some(mut meta) => {
-                if let Some(other) = meta.labels.get(ENV).filter(|e| Some(*e) != labels.get(ENV)) {
+                if let Some(other) = self.other_environment(&meta) {
                     // ほかの環境の秘密には触らない（同じプロジェクトを使っている）
                     anyhow::bail!("secret {secret} belongs to environment {other}");
                 }
@@ -778,6 +806,10 @@ impl<'a> Engine<'a> {
                 }
                 let remote_at = remotes[*to].get(&there.to_ascii_uppercase());
                 let meta = self.store.get(here).await?.unwrap_or_default();
+                // Another environment's value must not reach this environment's destinations
+                if let Some(other) = self.other_environment(&meta) {
+                    anyhow::bail!("secret {here} belongs to environment {other}; not delivered");
+                }
                 let rec = deliveries(&meta).remove(*dest);
                 let same = rec
                     .as_ref()
@@ -884,8 +916,11 @@ impl<'a> Engine<'a> {
         Ok(())
     }
 
-    /// 設定から外した届け先・秘密のうち、tegata が届けたものを消す
+    /// Removes what tegata delivered and the configuration no longer lists, for the secrets this
+    /// configuration owns (`owns`). Deliveries of other configurations and environments that share
+    /// the store, and of secrets whose resource was removed from the YAML, are left in place
     async fn remove_undelivered(&self, wanted: &[Wanted<'a>], dry_run: bool) -> anyhow::Result<()> {
+        let declared = self.declared();
         let keep: BTreeSet<(&str, &GithubDestination, String, &str)> = wanted
             .iter()
             .map(|(d, to, there, here)| (*d, *to, there.to_ascii_uppercase(), here.as_str()))
@@ -896,7 +931,7 @@ impl<'a> Engine<'a> {
             .map(|(_, to, there, _)| (*to, there.to_ascii_uppercase()))
             .collect();
         for (secret, meta) in self.store.list().await? {
-            if meta.labels.get(MANAGED_BY).map(String::as_str) != Some("tegata") {
+            if !self.owns(&declared, &secret, &meta) {
                 continue;
             }
             let stale: Vec<(String, Delivered)> = deliveries(&meta)
@@ -1047,12 +1082,17 @@ impl<'a> Engine<'a> {
                 }
             }
         }
-        // 設定から外したもので、まだ届け先に残っているもの
+        // Deliveries the configuration no longer lists, for the secrets it owns (what apply removes).
+        // Those of secrets it does not declare are shown by `status` with the secret
         let keep: BTreeSet<(&str, &GithubDestination, String)> = wanted
             .iter()
             .map(|(d, to, there, _)| (*d, *to, there.to_ascii_uppercase()))
             .collect();
+        let declared = self.declared();
         for (secret, meta) in self.store.list().await? {
+            if !self.owns(&declared, &secret, &meta) {
+                continue;
+            }
             for (dest, r) in deliveries(&meta) {
                 if !keep.contains(&(dest.as_str(), &r.github, r.name.to_ascii_uppercase())) {
                     println!(
@@ -1105,13 +1145,7 @@ impl<'a> Engine<'a> {
                 );
             }
         }
-        let known: BTreeSet<String> = self
-            .loaded
-            .config
-            .resources
-            .values()
-            .flat_map(Resource::all_secrets)
-            .collect();
+        let known = self.declared();
         for (secret, meta) in self.store.list().await? {
             if meta.labels.get(MANAGED_BY).map(String::as_str) == Some("tegata")
                 && !known.contains(&secret)
@@ -1120,6 +1154,14 @@ impl<'a> Engine<'a> {
                     "not in the config: {secret} (resource {})",
                     meta.labels.get(RESOURCE).map_or("?", String::as_str)
                 );
+                // Its resource was removed, or another configuration sharing the store declares
+                // it: apply cannot tell which, so it leaves these deliveries alone
+                for (dest, r) in deliveries(&meta) {
+                    println!(
+                        "  delivered to {} as {} (destination {dest}; apply leaves it)",
+                        r.github, r.name
+                    );
+                }
             }
         }
         self.destinations_status().await

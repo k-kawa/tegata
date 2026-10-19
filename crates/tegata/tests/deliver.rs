@@ -354,3 +354,211 @@ fn checks_destination_settings() {
             .contains("environment is empty")
     );
 }
+
+/// 偽の GitHub と、そこに届ける鍵
+async fn fake_github() -> (Shared, GithubAccess) {
+    let fake: Shared = Arc::default();
+    let api = serve(
+        fake.clone(),
+        crypto_box::SecretKey::generate(&mut crypto_box::aead::OsRng),
+    )
+    .await;
+    let access = GithubAccess {
+        api,
+        token: Some("test-token".to_owned()),
+    };
+    (fake, access)
+}
+
+fn write_config(dir: &Path, yaml: &str) -> Loaded {
+    std::fs::create_dir_all(dir).unwrap();
+    std::fs::write(dir.join("tegata.yaml"), yaml).unwrap();
+    Loaded::load(&dir.join("tegata.yaml")).unwrap()
+}
+
+/// Two configurations (two repositories) share one store, each delivering its own secrets.
+/// One's apply must not remove what the other delivered (#23)
+#[tokio::test]
+async fn configurations_sharing_a_store_keep_each_others_deliveries() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (fake, access) = fake_github().await;
+    let store = LocalStore::new(tmp.path().join("store"));
+    let get = |place: &str, name: &str| fake.lock().unwrap().value(place, name);
+    let puts = || fake.lock().unwrap().puts;
+
+    let a_dir = tmp.path().join("a");
+    let a_all = r#"
+store: { local: { dir: ../store } }
+resources:
+  deploy: { provider: random, secrets: { A_DEPLOY: value } }
+  plan: { provider: random, secrets: { A_PLAN: value } }
+destinations:
+  ci:
+    github: { repo: o/a }
+    secrets: { DEPLOY_TOKEN: A_DEPLOY, PLAN_TOKEN: A_PLAN }
+"#;
+    let a = write_config(&a_dir, a_all);
+    // B uses the same resource name as A (deploy), and the same destination name (ci)
+    let b = write_config(
+        &tmp.path().join("b"),
+        r#"
+store: { local: { dir: ../store } }
+resources:
+  deploy: { provider: random, secrets: { B_DEPLOY: value } }
+destinations:
+  ci:
+    github: { repo: o/b }
+    secrets: { DEPLOY_TOKEN: B_DEPLOY }
+"#,
+    );
+    let a_engine = Engine::new(&a, &store).with_github(access.clone());
+    let b_engine = Engine::new(&b, &store).with_github(access.clone());
+
+    a_engine.apply().await.unwrap();
+    let a_deploy = store.access("A_DEPLOY", None).await.unwrap().unwrap();
+    let a_plan = store.access("A_PLAN", None).await.unwrap().unwrap();
+    assert_eq!(
+        get("o/a", "DEPLOY_TOKEN").as_deref(),
+        Some(a_deploy.as_str())
+    );
+    assert_eq!(get("o/a", "PLAN_TOKEN").as_deref(), Some(a_plan.as_str()));
+
+    // B's dry-run and status do not touch A's deliveries
+    let before = puts();
+    Engine::new(&b, &store)
+        .with_github(access.clone())
+        .with_approval(Approval::DryRun)
+        .apply()
+        .await
+        .unwrap();
+    b_engine.status().await.unwrap();
+    assert_eq!(puts(), before);
+
+    // B's apply delivers B's secret and leaves A's alone
+    b_engine.apply().await.unwrap();
+    let b_deploy = store.access("B_DEPLOY", None).await.unwrap().unwrap();
+    assert_eq!(
+        get("o/b", "DEPLOY_TOKEN").as_deref(),
+        Some(b_deploy.as_str())
+    );
+    assert_eq!(
+        get("o/a", "DEPLOY_TOKEN").as_deref(),
+        Some(a_deploy.as_str())
+    );
+    assert_eq!(get("o/a", "PLAN_TOKEN").as_deref(), Some(a_plan.as_str()));
+    for secret in ["A_DEPLOY", "A_PLAN"] {
+        let meta = store.get(secret).await.unwrap().unwrap();
+        assert_eq!(tegata::deliver::deliveries(&meta).len(), 1, "{secret}");
+    }
+
+    // And the other way round: A's apply writes nothing and leaves B's alone
+    let before = puts();
+    a_engine.apply().await.unwrap();
+    assert_eq!(puts(), before);
+    assert_eq!(
+        get("o/b", "DEPLOY_TOKEN").as_deref(),
+        Some(b_deploy.as_str())
+    );
+
+    // Removing a whole resource from A: apply cannot tell it from B's secrets, so it leaves the
+    // delivery in place (status shows it)
+    let a_without_plan = write_config(
+        &a_dir,
+        r#"
+store: { local: { dir: ../store } }
+resources:
+  deploy: { provider: random, secrets: { A_DEPLOY: value } }
+destinations:
+  ci:
+    github: { repo: o/a }
+    secrets: { DEPLOY_TOKEN: A_DEPLOY }
+"#,
+    );
+    let engine = Engine::new(&a_without_plan, &store).with_github(access.clone());
+    engine.apply().await.unwrap();
+    engine.status().await.unwrap();
+    assert_eq!(get("o/a", "PLAN_TOKEN").as_deref(), Some(a_plan.as_str()));
+
+    // The documented order removes it: first take it out of destinations and apply, then remove
+    // the resource
+    let a_plan_undelivered = write_config(
+        &a_dir,
+        r#"
+store: { local: { dir: ../store } }
+resources:
+  deploy: { provider: random, secrets: { A_DEPLOY: value } }
+  plan: { provider: random, secrets: { A_PLAN: value } }
+destinations:
+  ci:
+    github: { repo: o/a }
+    secrets: { DEPLOY_TOKEN: A_DEPLOY }
+"#,
+    );
+    Engine::new(&a_plan_undelivered, &store)
+        .with_github(access.clone())
+        .apply()
+        .await
+        .unwrap();
+    assert_eq!(get("o/a", "PLAN_TOKEN"), None);
+    assert_eq!(
+        get("o/a", "DEPLOY_TOKEN").as_deref(),
+        Some(a_deploy.as_str())
+    );
+    assert_eq!(
+        get("o/b", "DEPLOY_TOKEN").as_deref(),
+        Some(b_deploy.as_str())
+    );
+}
+
+/// Two environments in one store: staging's apply must not remove production's deliveries, even
+/// though both declare the same secrets (#23)
+#[tokio::test]
+async fn environments_sharing_a_store_keep_each_others_deliveries() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    let (fake, access) = fake_github().await;
+    let store = LocalStore::new(dir.join("store"));
+    let get = |place: &str, name: &str| fake.lock().unwrap().value(place, name);
+    std::fs::write(
+        dir.join("tegata.yaml"),
+        r#"
+stores:
+  main: { local: { dir: store } }
+environments:
+  staging:
+    destinations:
+      ci: { github: { repo: o/r, environment: staging }, secrets: [KEY] }
+  production:
+    destinations:
+      ci: { github: { repo: o/r, environment: production }, secrets: [KEY] }
+resources:
+  key: { provider: random, stores: { main: [{ name: KEY }] } }
+"#,
+    )
+    .unwrap();
+    let load = |env: &str| Loaded::load_env(&dir.join("tegata.yaml"), Some(env)).unwrap();
+
+    let production = load("production");
+    Engine::new(&production, &store)
+        .with_github(access.clone())
+        .with_approval(Approval::Yes)
+        .apply()
+        .await
+        .unwrap();
+    let key = store.access("KEY", None).await.unwrap().unwrap();
+    assert_eq!(get("o/r@production", "KEY").as_deref(), Some(key.as_str()));
+
+    // KEY belongs to production, so staging's apply fails on it: it neither delivers production's
+    // value to staging nor removes production's delivery
+    let staging = load("staging");
+    let err = Engine::new(&staging, &store)
+        .with_github(access.clone())
+        .apply()
+        .await
+        .unwrap_err();
+    assert!(format!("{err:#}").contains("destinations"), "{err:#}");
+    assert_eq!(get("o/r@staging", "KEY"), None);
+    assert_eq!(get("o/r@production", "KEY").as_deref(), Some(key.as_str()));
+    let meta = store.get("KEY").await.unwrap().unwrap();
+    assert_eq!(tegata::deliver::deliveries(&meta).len(), 1);
+}
