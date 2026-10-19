@@ -120,7 +120,7 @@ The configuration file is `tegata.yaml`, or `-f <file>` / `TEGATA_FILE`. Every k
 | `random` (built in) | | Random bytes as hex (`bytes`, default 32) |
 | `manual` (built in) | | A value you type in (`tegata set`) |
 | `value` (built in) | data | Fixed, non-secret values written in the YAML |
-| `tegata-provider-cloudflare` | `api_token`, `tunnel_token` | Account API tokens (also usable as R2 keys), Tunnel tokens |
+| `tegata-provider-cloudflare` | `api_token`, `tunnel_token`, `turnstile_widget` | Account API tokens (also usable as R2 keys), Tunnel tokens, Turnstile site and secret keys |
 | `tegata-provider-tailscale` | `auth_key` | Auth keys for joining a tailnet |
 | `tegata-provider-aws` | `ses_smtp_credentials` | Amazon SES SMTP credentials (an access key for an IAM user) |
 | `tegata-provider-gcp` | `sql_user` | Cloud SQL built-in user passwords |

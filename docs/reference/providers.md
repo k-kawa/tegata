@@ -33,7 +33,7 @@ providers:
 | Provider key | Description |
 | --- | --- |
 | `config.account_id` | The Cloudflare account |
-| `credentials.api_token` | An API token that can create account API tokens (and, for `tunnel_token`, edit Cloudflare Tunnels). Optional: without it, the provider uses the login of Cloudflare's `cf` command-line tool, read from its configuration file (`~/Library/Preferences/cloudflare/config/default.json` on macOS, `$XDG_CONFIG_HOME/cloudflare/config/default.json` or `~/.config/cloudflare/config/default.json` elsewhere). When that login expires within two minutes, the provider runs `cf auth whoami` so that `cf` refreshes it |
+| `credentials.api_token` | An API token that can create account API tokens (and, for `tunnel_token`, edit Cloudflare Tunnels; for `turnstile_widget`, the account permission "Turnstile Sites Write"). Optional: without it, the provider uses the login of Cloudflare's `cf` command-line tool, read from its configuration file (`~/Library/Preferences/cloudflare/config/default.json` on macOS, `$XDG_CONFIG_HOME/cloudflare/config/default.json` or `~/.config/cloudflare/config/default.json` elsewhere). When that login expires within two minutes, the provider runs `cf auth whoami` so that `cf` refreshes it |
 
 ### `api_token` (managed)
 
@@ -94,6 +94,37 @@ resources:
 | `value` | The tunnel token |
 
 A tunnel has only one secret. After a rotation, `cloudflared` instances that are already connected stay connected, but new connections with the old token fail. `prune` deletes nothing on Cloudflare; instead it checks that no connector started before the rotation is still connected, and refuses (naming the connectors and where they connect from) until they have been restarted with the new token.
+
+### `turnstile_widget` (managed)
+
+Creates a [Turnstile](https://developers.cloudflare.com/turnstile/) widget and returns its site key, which the page shows, and its secret key, which the server sends to `siteverify`. Each generation is a new widget, so `rotate` changes both keys together: render them to the service that both shows the site key and checks with the secret. A visitor who loaded the page before the switch holds a token of the old widget until they reload.
+
+```yaml
+resources:
+  signup_turnstile:
+    provider: cloudflare
+    type: turnstile_widget
+    config:
+      name: sign-up
+      domains: [apps.example.com]
+    stores:
+      main:
+        - { output: sitekey, name: TURNSTILE_SITE_KEY, readers: [app] }
+        - { output: secret, name: TURNSTILE_SECRET, readers: [app] }
+```
+
+| Config | Description |
+| --- | --- |
+| `name` | The widget's name. The creation time is added, as for `api_token` |
+| `domains` | The host names the widget may be shown on (at least one) |
+| `mode` | `managed` (the default), `non-interactive`, or `invisible` |
+
+| Output | Description |
+| --- | --- |
+| `sitekey` | The site key (not secret; it is in the page) |
+| `secret` | The secret key |
+
+`prune` deletes the older widgets (a widget that no longer exists counts as deleted).
 
 ## tailscale
 

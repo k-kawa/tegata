@@ -5,7 +5,7 @@ How to replace a secret with a new value without breaking the services that use 
 | The value | Examples | Steps |
 | --- | --- | --- |
 | Checked by your own service, which can accept two values | Session keys, signing keys, webhook secrets (`random` with `previous`) | `rotate` → render → `settle` → render → `prune` |
-| Issued by another service, old and new both work until the old one is deleted | `cloudflare/api_token`, `tailscale/auth_key`, `aws/ses_smtp_credentials` | `rotate` → render → `prune` |
+| Issued by another service, old and new both work until the old one is deleted | `cloudflare/api_token`, `cloudflare/turnstile_widget`, `tailscale/auth_key`, `aws/ses_smtp_credentials` | `rotate` → render → `prune` |
 | Only one value exists; a new one stops the old one at once | `gcp/sql_user`, `cloudflare/tunnel_token` | `rotate` (asks first) → render at once → `prune` |
 | Typed in by hand | `manual` | `set` → render → `prune` |
 

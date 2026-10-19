@@ -349,3 +349,117 @@ async fn rotates_tunnel_tokens_and_checks_old_connectors_on_prune() {
     assert!(call(&api, req).await.get("error").is_none());
     assert!(!rotated_at.is_empty());
 }
+
+/// Turnstile の widget：作る（世代ごとに新しい widget）、設定を確かめる、消す（もうないものは消えたものとする）
+#[tokio::test]
+async fn creates_and_deletes_turnstile_widgets() {
+    let fake = Arc::new(Fake::default());
+    let app = Router::new()
+        .route(
+            "/accounts/acc/challenges/widgets",
+            post(|State(f): State<Arc<Fake>>, h: HeaderMap, Json(b): Json<Value>| async move {
+                authed(&h);
+                let n = {
+                    let mut c = f.created.lock().unwrap();
+                    c.push(b);
+                    c.len()
+                };
+                Json(json!({ "success": true, "result": {
+                    "sitekey": format!("0x4AAAA-site-{n}"), "secret": format!("0x4AAAA-secret-{n}"),
+                } }))
+            }),
+        )
+        .route(
+            "/accounts/acc/challenges/widgets/{sitekey}",
+            delete(|State(f): State<Arc<Fake>>, h: HeaderMap, Path(k): Path<String>| async move {
+                authed(&h);
+                f.deleted.lock().unwrap().push(k.clone());
+                if k == "gone" {
+                    (
+                        axum::http::StatusCode::NOT_FOUND,
+                        Json(json!({ "success": false, "errors": [{ "code": 10007, "message": "not found" }] })),
+                    )
+                } else {
+                    (axum::http::StatusCode::OK, Json(json!({ "success": true, "result": {} })))
+                }
+            }),
+        )
+        .with_state(fake.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let api = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+    let base = json!({
+        "protocol": 1, "type": "turnstile_widget",
+        "provider_config": { "account_id": "acc" },
+        "credentials": { "api_token": "boot" },
+        "config": { "name": "sign-up", "domains": ["apps.example.com"] },
+    });
+    let mut req = base.clone();
+    req["op"] = json!("describe");
+    assert_eq!(
+        call(&api, req).await["types"]["turnstile_widget"],
+        "managed"
+    );
+
+    // 作る：mode の既定は managed。名前に作った日時が付く
+    let mut req = base.clone();
+    req["op"] = json!("create");
+    let res = call(&api, req.clone()).await;
+    assert_eq!(res["outputs"]["sitekey"], "0x4AAAA-site-1");
+    assert_eq!(res["outputs"]["secret"], "0x4AAAA-secret-1");
+    assert_eq!(res["state"], json!({ "sitekey": "0x4AAAA-site-1" }));
+    let body = fake.created.lock().unwrap()[0].clone();
+    assert!(
+        body["name"].as_str().unwrap().starts_with("sign-up (20"),
+        "{body}"
+    );
+    assert_eq!(body["domains"], json!(["apps.example.com"]));
+    assert_eq!(body["mode"], "managed");
+
+    // 次の世代は別の widget（サイトキーと秘密の鍵が一緒に替わる）
+    let mut req2 = req.clone();
+    req2["config"]["mode"] = json!("invisible");
+    let res = call(&api, req2).await;
+    assert_eq!(res["outputs"]["sitekey"], "0x4AAAA-site-2");
+    assert_eq!(fake.created.lock().unwrap()[1]["mode"], "invisible");
+
+    // 設定の誤り
+    for (config, want) in [
+        (
+            json!({ "name": "x", "domains": [] }),
+            "domains needs at least one host name",
+        ),
+        (
+            json!({ "name": " ", "domains": ["a.example"] }),
+            "name is empty",
+        ),
+        (
+            json!({ "name": "x", "domains": ["a.example"], "mode": "loud" }),
+            "mode must be one of",
+        ),
+        (
+            json!({ "name": "x", "domains": ["a.example"], "region": "world" }),
+            "invalid config",
+        ),
+    ] {
+        let mut bad = req.clone();
+        bad["config"] = config;
+        let err = call(&api, bad).await["error"].as_str().unwrap().to_owned();
+        assert!(err.contains(want), "{err}");
+    }
+    assert_eq!(fake.created.lock().unwrap().len(), 2);
+
+    // 消す。もうないものは消えたものとする
+    for sitekey in ["0x4AAAA-site-1", "gone"] {
+        let mut req = base.clone();
+        req["op"] = json!("delete");
+        req["state"] = json!({ "sitekey": sitekey });
+        let res = call(&api, req).await;
+        assert!(res.get("error").is_none(), "{res}");
+    }
+    assert_eq!(
+        *fake.deleted.lock().unwrap(),
+        vec!["0x4AAAA-site-1".to_owned(), "gone".to_owned()]
+    );
+}

@@ -4,6 +4,10 @@ All notable changes to tegata and the providers in this repository, which share 
 
 ## [Unreleased]
 
+### Added
+
+- `cloudflare/turnstile_widget` (#28): creates a Turnstile widget and returns its site key and secret key. Each generation is a new widget; `prune` deletes the older ones.
+
 ## [0.3.1] - 2026-10-19
 
 ### Fixed
