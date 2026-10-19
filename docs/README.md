@@ -16,6 +16,7 @@ Step by step, for a task.
 Why things work the way they do.
 
 - [When a secret needs `previous`](concepts/previous-and-settle.md): who checks a value decides whether a rotation needs `previous` and `settle`, with a minute-by-minute example
+- [How tegata compares with other tools](concepts/compared-with-other-tools.md): cloud secret stores, OpenBao and Vault, Infisical, External Secrets Operator, Terraform, Teller, vals and SOPS: what each does, when another one fits better, and using them together
 
 ## Reference
 
