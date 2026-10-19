@@ -23,6 +23,15 @@
 //!   コネクター（前の秘密でつないだもの）が残っていれば、どこからつないでいるかを出して断る（そこで cloudflared を
 //!   新しいトークンで起動し直してから、もう一度 prune する）。切って消すことはしない（客のリクエストが届かなくなるため）
 //!
+//! 型 `turnstile_widget`（managed）：Turnstile の widget（ボットの確かめ）。サイトキー（画面に出す。公開してよい）と
+//! 秘密の鍵（サーバーが siteverify に送る）の組。世代ごとに新しい widget を作る（rotate でサイトキーと秘密の鍵が一緒に替わる）
+//! - config：`name`（作った日時を後ろに付ける）、`domains`（widget を出してよいホスト名）、`mode`（`managed`（既定）、
+//!   `non-interactive`、`invisible`）
+//! - 鍵の権限：アカウントの「Turnstile Sites Write」
+//! - 出力：`sitekey`、`secret`
+//! - state：`sitekey`（消すときに使う）
+//! - delete（prune）：widget を消す（もうないものは消えたものとする）
+//!
 //! 操作は、どれも API を直接呼ぶ。試験では TEGATA_CLOUDFLARE_API（API の場所）、TEGATA_CF_CONFIG（cf の設定のファイル）、
 //! TEGATA_CF_BIN（cf の場所）で替える
 
@@ -52,6 +61,21 @@ struct Policy {
     #[serde(default)]
     zones: Vec<String>,
 }
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WidgetConfig {
+    name: String,
+    domains: Vec<String>,
+    #[serde(default = "default_widget_mode")]
+    mode: String,
+}
+
+fn default_widget_mode() -> String {
+    "managed".to_owned()
+}
+
+const WIDGET_MODES: [&str; 3] = ["managed", "non-interactive", "invisible"];
 
 #[derive(Deserialize)]
 struct TokenConfig {
@@ -317,6 +341,83 @@ impl Cloudflare {
     }
 }
 
+impl Cloudflare {
+    /// 新しい Turnstile の widget を作る（世代ごとに 1 つ）
+    async fn create_widget(&self, req: &Request) -> anyhow::Result<Created> {
+        let cfg: WidgetConfig =
+            serde_json::from_value(req.config.clone()).context("invalid config")?;
+        anyhow::ensure!(!cfg.name.trim().is_empty(), "name is empty");
+        anyhow::ensure!(
+            !cfg.domains.is_empty() && cfg.domains.iter().all(|d| !d.trim().is_empty()),
+            "domains needs at least one host name"
+        );
+        anyhow::ensure!(
+            WIDGET_MODES.contains(&cfg.mode.as_str()),
+            "mode must be one of {}, not {}",
+            WIDGET_MODES.join(", "),
+            cfg.mode
+        );
+        let account = req.provider_str("account_id")?;
+        let token = self.token(req).await?;
+        // 作った日時を名前に付ける（入れ替えの間は同じ設定の widget が 2 つある）
+        let name = format!(
+            "{} ({})",
+            cfg.name,
+            chrono::Utc::now().format("%Y-%m-%d %H:%M UTC")
+        );
+        let v = self
+            .http(
+                &token,
+                reqwest::Method::POST,
+                &format!("/accounts/{account}/challenges/widgets"),
+                Some(json!({ "name": name, "domains": cfg.domains, "mode": cfg.mode })),
+            )
+            .await
+            .context("cannot create the Turnstile widget (the API token needs the account permission \"Turnstile Sites Write\")")?;
+        let sitekey = v["sitekey"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("no sitekey returned"))?;
+        let secret = v["secret"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("no secret returned"))?;
+        eprintln!("created Turnstile widget: {name} ({sitekey})");
+        Ok(Created {
+            outputs: BTreeMap::from([
+                ("sitekey".to_owned(), sitekey.to_owned()),
+                ("secret".to_owned(), secret.to_owned()),
+            ]),
+            state: json!({ "sitekey": sitekey }),
+        })
+    }
+
+    /// 前の世代の widget を消す
+    async fn delete_widget(&self, req: &Request) -> anyhow::Result<()> {
+        let sitekey = req.state["sitekey"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("state.sitekey is missing"))?;
+        let account = req.provider_str("account_id")?;
+        let res = self
+            .http
+            .delete(format!(
+                "{}/accounts/{account}/challenges/widgets/{sitekey}",
+                self.api
+            ))
+            .bearer_auth(self.token(req).await?)
+            .send()
+            .await
+            .context("cannot reach Cloudflare")?;
+        let status = res.status();
+        // もうないものは消えたものとする
+        anyhow::ensure!(
+            status.is_success() || status == reqwest::StatusCode::NOT_FOUND,
+            "Cloudflare returned {status} when deleting Turnstile widget {sitekey}: {}",
+            res.text().await.unwrap_or_default()
+        );
+        eprintln!("deleted Turnstile widget {sitekey}");
+        Ok(())
+    }
+}
+
 pub fn sha256_hex(s: &str) -> String {
     Sha256::digest(s.as_bytes())
         .iter()
@@ -330,6 +431,7 @@ impl Provider for Cloudflare {
         BTreeMap::from([
             ("api_token".to_owned(), Kind::Managed),
             ("tunnel_token".to_owned(), Kind::Managed),
+            ("turnstile_widget".to_owned(), Kind::Managed),
         ])
     }
 
@@ -341,6 +443,9 @@ impl Provider for Cloudflare {
     async fn create(&self, req: &Request) -> anyhow::Result<Created> {
         if req.kind == "tunnel_token" {
             return self.rotate_tunnel(req).await;
+        }
+        if req.kind == "turnstile_widget" {
+            return self.create_widget(req).await;
         }
         let cfg: TokenConfig =
             serde_json::from_value(req.config.clone()).context("invalid config")?;
@@ -438,6 +543,9 @@ impl Provider for Cloudflare {
     async fn delete(&self, req: &Request) -> anyhow::Result<()> {
         if req.kind == "tunnel_token" {
             return self.retire_tunnel_token(req).await;
+        }
+        if req.kind == "turnstile_widget" {
+            return self.delete_widget(req).await;
         }
         let id = req.state["id"]
             .as_str()
