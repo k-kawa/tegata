@@ -4,9 +4,17 @@ All notable changes to tegata and the providers in this repository, which share 
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-20
+
+0.4.0 adds a provider type for Turnstile. Configurations written for 0.3 work unchanged.
+
 ### Added
 
 - `cloudflare/turnstile_widget` (#29): creates a Turnstile widget and returns its site key and secret key. Each generation is a new widget; `prune` deletes the older ones.
+
+### Moving from 0.3
+
+Nothing is required. The provider protocol has not changed, so providers locked at 0.3 keep working. To use `turnstile_widget`, set the cloudflare provider's `version: "^0.4"` and run `tegata init --upgrade`.
 
 ## [0.3.1] - 2026-10-19
 
@@ -78,7 +86,8 @@ The first release.
 - Destinations: copies of secrets in the GitHub Actions secrets of a repository or an environment.
 - Releases are built on GitHub-hosted runners with artifact attestations, and `SHA256SUMS` is signed by the maintainer.
 
-[Unreleased]: https://github.com/k-kawa/tegata/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/k-kawa/tegata/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/k-kawa/tegata/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/k-kawa/tegata/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/k-kawa/tegata/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/k-kawa/tegata/compare/v0.1.1...v0.2.0
