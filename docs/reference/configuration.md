@@ -284,11 +284,26 @@ GitHub secret names may use letters, digits, and `_`, must not start with a digi
 
 | Command | What happens at destinations |
 | --- | --- |
-| `apply` | Writes every secret whose latest version has not been delivered, or that was changed or removed on GitHub since tegata wrote it (the store's value wins, and tegata says so). A secret of the same name that tegata did not write is overwritten, also with a note. Secrets tegata delivered that are no longer in the configuration are removed from GitHub. Secrets tegata never wrote are never removed |
+| `apply` | Writes every secret whose latest version has not been delivered, or that was changed or removed on GitHub since tegata wrote it (the store's value wins, and tegata says so). A secret of the same name that tegata did not write is overwritten, also with a note. Deliveries the configuration no longer lists (a secret taken out of a destination, renamed there, or a whole destination removed) are removed from GitHub. Only the secrets this configuration declares, in this environment, are considered: see [removing a resource, and sharing a store](#removing-a-resource-and-sharing-a-store). Secrets tegata never wrote are never removed |
 | `rotate`, `set`, `settle`, `import` | Write the changed values (and anything else not delivered yet). Workflows use the new value from their next run; nothing needs restarting |
 | `prune` | Nothing (GitHub keeps only the latest value) |
-| `status` | For each destination and secret: delivered (version), not delivered yet, changed or missing on GitHub. Also lists the other secrets there, which tegata does not touch, and, for an environment, names that are also repository secrets |
+| `status` | For each destination and secret: delivered (version), not delivered yet, changed or missing on GitHub. Also lists the other secrets there, which tegata does not touch, and, for an environment, names that are also repository secrets. For a managed secret the configuration does not declare, where it is still delivered |
 | `apply --dry-run` | Shows what would be written and removed |
+
+A secret labeled with another environment is never delivered: its value must not reach this environment's destinations. The command ends with an error naming it.
+
+### Removing a resource, and sharing a store
+
+Several configurations may use the same store, for example two repositories, each with its own `tegata.yaml`, keeping their secrets in one Google Cloud project. To keep them from touching each other, `apply` only removes deliveries of secrets that **this configuration declares** (in a resource, including `previous`) and that are not labeled with another environment. In the store, a secret of another configuration and a secret whose resource you removed look the same, so tegata leaves the deliveries of both alone.
+
+To remove a resource and its copies on GitHub, do it in two steps:
+
+1. Take its secrets out of `destinations`, and run `apply`: the copies are removed from GitHub.
+2. Remove the resource. Its secrets stay in the store, and `status` lists them as `not in the config`; delete them by hand when nothing reads them.
+
+If you removed the resource first, `status` shows where its secrets are still delivered (`delivered to … (…; apply leaves it)`). Put the resource back and follow the steps above, or delete those GitHub secrets by hand.
+
+Configurations that share a store should not declare the same secret names: each secret has one owner.
 
 If writing fails (no permission, GitHub unreachable), the value is still in the store, the command ends with an error naming what was not delivered, and the next `apply` delivers it.
 
