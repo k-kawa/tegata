@@ -6,8 +6,8 @@ All notable changes to tegata and the providers in this repository, which share 
 
 ### Fixed
 
-- `apply` no longer removes GitHub secrets delivered by another configuration that uses the same store, or by another environment in the same store (#23). It removes only the deliveries of secrets the configuration declares. A secret whose resource was removed from the YAML is now left delivered: take its secrets out of `destinations` and run `apply` before removing the resource ([how](docs/reference/configuration.md#removing-a-resource-and-sharing-a-store)). `status` shows where such secrets are still delivered.
-- `apply` no longer delivers another environment's value to this environment's destinations when both use the same store; it ends with an error naming the secret (#23).
+- `apply` no longer removes GitHub secrets delivered by another configuration that uses the same store, or by another environment in the same store (#24). It removes only the deliveries of secrets the configuration declares. A secret whose resource was removed from the YAML is now left delivered: take its secrets out of `destinations` and run `apply` before removing the resource ([how](docs/reference/configuration.md#removing-a-resource-and-sharing-a-store)). `status` shows where such secrets are still delivered.
+- `apply` no longer delivers another environment's value to this environment's destinations when both use the same store; it ends with an error naming the secret (#24).
 
 ## [0.3.0] - 2026-10-19
 
