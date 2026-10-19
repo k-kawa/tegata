@@ -185,7 +185,7 @@ Or build from source (Rust 1.87 or later): `cargo install --path crates/tegata`,
 
 ## Documentation
 
-All of it, by kind: [docs](docs/README.md).
+All of it, by kind: [docs](docs/README.md). The same documentation is on the website, in English and Japanese: [tegata.dev](https://tegata.dev).
 
 - Guides: [Getting started](docs/guides/getting-started.md), [Rotating secrets](docs/guides/rotating-secrets.md), [Staging and production](docs/guides/staging-and-production.md), [Running on servers](docs/guides/running-on-servers.md), [Admin credentials and CI](docs/guides/admin-credentials.md), [Publishing providers](docs/guides/publishing-providers.md)
 - Concepts: [When a secret needs `previous`](docs/concepts/previous-and-settle.md), [How tegata compares with other tools](docs/concepts/compared-with-other-tools.md)
