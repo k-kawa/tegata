@@ -169,7 +169,7 @@ Publishing your own provider: see [publishing providers](docs/guides/publishing-
 Prebuilt binaries for Linux (x86_64, aarch64; static, no dependencies) and macOS (x86_64, Apple Silicon) are on the [releases page](https://github.com/k-kawa/tegata/releases), named `tegata_<version>_<os>_<arch>`. Each release has a `SHA256SUMS` signed with the [release signing key](SECURITY.md#release-signing-key), and GitHub [artifact attestations](https://docs.github.com/en/actions/concepts/security/artifact-attestations) that show the files were built by this repository's release workflow:
 
 ```sh
-v=0.3.0 p=linux_x86_64
+v=0.3.1 p=linux_x86_64
 gh release download v$v -R k-kawa/tegata -p "tegata_${v}_${p}" -p SHA256SUMS -p SHA256SUMS.minisig
 minisign -V -P RWS+RgaPKYHijXCDQ/JCehzLyohjXERYxShqSb6lS71/MHaCS3agTxkB -m SHA256SUMS
 grep " tegata_${v}_${p}$" SHA256SUMS | shasum -a 256 -c

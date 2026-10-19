@@ -4,6 +4,8 @@ All notable changes to tegata and the providers in this repository, which share 
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-10-19
+
 ### Fixed
 
 - `apply` no longer removes GitHub secrets delivered by another configuration that uses the same store, or by another environment in the same store (#24). It removes only the deliveries of secrets the configuration declares. A secret whose resource was removed from the YAML is now left delivered: take its secrets out of `destinations` and run `apply` before removing the resource ([how](docs/reference/configuration.md#removing-a-resource-and-sharing-a-store)). `status` shows where such secrets are still delivered.
@@ -72,7 +74,8 @@ The first release.
 - Destinations: copies of secrets in the GitHub Actions secrets of a repository or an environment.
 - Releases are built on GitHub-hosted runners with artifact attestations, and `SHA256SUMS` is signed by the maintainer.
 
-[Unreleased]: https://github.com/k-kawa/tegata/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/k-kawa/tegata/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/k-kawa/tegata/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/k-kawa/tegata/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/k-kawa/tegata/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/k-kawa/tegata/compare/v0.1.0...v0.1.1
