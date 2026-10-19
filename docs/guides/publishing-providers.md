@@ -20,7 +20,7 @@ Users install with:
 providers:
   example:
     source: github.com/<owner>/<repo>
-    version: "^0.3"
+    version: "^0.4"
     public_key: "<your minisign public key>"
 ```
 

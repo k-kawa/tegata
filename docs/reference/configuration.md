@@ -81,7 +81,7 @@ External providers are executables that tegata runs once per operation (see [the
 providers:
   cloudflare:
     source: github.com/k-kawa/tegata
-    version: "^0.3"
+    version: "^0.4"
     config:
       account_id: 0123456789abcdef
     credentials:
