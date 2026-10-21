@@ -5,7 +5,7 @@
 //! - 鍵：`api_token`（あれば、それで API を呼ぶ。アカウントのトークンを作る権限が要る）。なければ、運営者の `cf` のログイン
 //!   （OAuth。`account_api_tokens:create` を持つ）の鍵を、`cf` の設定のファイル（`oauth_token`、`expiration_time`）から読む。
 //!   期限まで 2 分を切っていれば、`cf auth whoami` を流して `cf` に取り直させてから読み直す（OAuth の取り直しは自分で書かない）
-//! - config：`name`（作った日時を後ろに付ける）、`policies`（権限の名前の並びと、効かせる先：`account: true`、`r2_buckets`、`zones`）。
+//! - config：`name`（後ろに「tegata」と作った日時を付ける）、`policies`（権限の名前の並びと、効かせる先：`account: true`、`r2_buckets`、`zones`）。
 //!   権限の名前は、時期によって Write と Edit があるので、`"A|B"` で候補を並べられる
 //! - 出力：`id`、`value`、`r2_secret_access_key`（値の SHA-256。R2 の S3 の鍵のシークレット。ID がアクセスキー）
 //! - state：`id`（消すときに使う）
@@ -25,7 +25,7 @@
 //!
 //! 型 `turnstile_widget`（managed）：Turnstile の widget（ボットの確かめ）。サイトキー（画面に出す。公開してよい）と
 //! 秘密の鍵（サーバーが siteverify に送る）の組。世代ごとに新しい widget を作る（rotate でサイトキーと秘密の鍵が一緒に替わる）
-//! - config：`name`（作った日時を後ろに付ける）、`domains`（widget を出してよいホスト名）、`mode`（`managed`（既定）、
+//! - config：`name`（後ろに「tegata」と作った日時を付ける）、`domains`（widget を出してよいホスト名）、`mode`（`managed`（既定）、
 //!   `non-interactive`、`invisible`）
 //! - 鍵の権限：アカウントの「Turnstile Sites Write」
 //! - 出力：`sitekey`、`secret`
@@ -81,6 +81,15 @@ const WIDGET_MODES: [&str; 3] = ["managed", "non-interactive", "invisible"];
 struct TokenConfig {
     name: String,
     policies: Vec<Policy>,
+}
+
+/// 作るものの名前：設定の名前の後ろに「tegata」と作った日時を付ける。入れ替えの間は同じ設定のものが 2 つあり、
+/// ダッシュボードで消すときに取り違えないように。「tegata」は、手で作ったものと見分けるため
+fn generation_name(name: &str) -> String {
+    format!(
+        "{name} (tegata, {})",
+        chrono::Utc::now().format("%Y-%m-%d %H:%M UTC")
+    )
 }
 
 const ACCOUNT_SCOPE: &str = "com.cloudflare.api.account";
@@ -359,12 +368,7 @@ impl Cloudflare {
         );
         let account = req.provider_str("account_id")?;
         let token = self.token(req).await?;
-        // 作った日時を名前に付ける（入れ替えの間は同じ設定の widget が 2 つある）
-        let name = format!(
-            "{} ({})",
-            cfg.name,
-            chrono::Utc::now().format("%Y-%m-%d %H:%M UTC")
-        );
+        let name = generation_name(&cfg.name);
         let v = self
             .http(
                 &token,
@@ -509,12 +513,7 @@ impl Provider for Cloudflare {
                 );
             }
         }
-        // 作った日時を名前に付ける。入れ替えの間は同じ設定のトークンが 2 つあり、ダッシュボードで消すときに取り違えないように
-        let name = format!(
-            "{} ({})",
-            cfg.name,
-            chrono::Utc::now().format("%Y-%m-%d %H:%M UTC")
-        );
+        let name = generation_name(&cfg.name);
         let v = self
             .http(
                 &token,

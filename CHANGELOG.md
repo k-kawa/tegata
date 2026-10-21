@@ -4,6 +4,10 @@ All notable changes to tegata and the providers in this repository, which share 
 
 ## [Unreleased]
 
+### Changed
+
+- `cloudflare/api_token` and `cloudflare/turnstile_widget` put "tegata" in the name of what they create: `releases read (tegata, 2026-10-18 09:30 UTC)` instead of `releases read (2026-10-18 09:30 UTC)`. In the dashboard, tokens and widgets made by tegata can be told from ones made by hand. Existing tokens and widgets keep their names until they are rotated.
+
 ## [0.4.0] - 2026-10-20
 
 0.4.0 adds a provider type for Turnstile. Configurations written for 0.3 work unchanged.

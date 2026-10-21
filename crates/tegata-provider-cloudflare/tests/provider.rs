@@ -106,7 +106,7 @@ async fn creates_and_deletes_tokens() {
     assert_eq!(res["state"]["id"], "tok-1");
     let body = fake.created.lock().unwrap()[0].clone();
     assert!(
-        body["name"].as_str().unwrap().starts_with("t (20"),
+        body["name"].as_str().unwrap().starts_with("t (tegata, 20"),
         "{body}"
     );
     assert_eq!(
@@ -402,7 +402,7 @@ async fn creates_and_deletes_turnstile_widgets() {
         "managed"
     );
 
-    // 作る：mode の既定は managed。名前に作った日時が付く
+    // 作る：mode の既定は managed。名前に「tegata」と作った日時が付く
     let mut req = base.clone();
     req["op"] = json!("create");
     let res = call(&api, req.clone()).await;
@@ -411,7 +411,10 @@ async fn creates_and_deletes_turnstile_widgets() {
     assert_eq!(res["state"], json!({ "sitekey": "0x4AAAA-site-1" }));
     let body = fake.created.lock().unwrap()[0].clone();
     assert!(
-        body["name"].as_str().unwrap().starts_with("sign-up (20"),
+        body["name"]
+            .as_str()
+            .unwrap()
+            .starts_with("sign-up (tegata, 20"),
         "{body}"
     );
     assert_eq!(body["domains"], json!(["apps.example.com"]));

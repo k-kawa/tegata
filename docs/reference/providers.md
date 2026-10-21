@@ -59,7 +59,7 @@ resources:
 
 | Config | Description |
 | --- | --- |
-| `name` | The token's name. The creation time is added (`releases read (2026-10-18 09:30 UTC)`), so the old and the new token can be told apart during a rotation |
+| `name` | The token's name. "tegata" and the creation time are added (`releases read (tegata, 2026-10-18 09:30 UTC)`), so the old and the new token can be told apart during a rotation, and tokens made by tegata can be told from ones made by hand |
 | `policies` | A list of policies. Each has `permissions` (names of permission groups as the dashboard shows them; `"A\|B"` tries `A`, then `B`, for groups that were renamed) and at least one of `account: true` (the whole account), `r2_buckets` (bucket names), and `zones` (zone names) |
 
 | Output | Description |
@@ -115,7 +115,7 @@ resources:
 
 | Config | Description |
 | --- | --- |
-| `name` | The widget's name. The creation time is added, as for `api_token` |
+| `name` | The widget's name. "tegata" and the creation time are added, as for `api_token` |
 | `domains` | The host names the widget may be shown on (at least one) |
 | `mode` | `managed` (the default), `non-interactive`, or `invisible` |
 
