@@ -9,6 +9,8 @@
 //!   権限の名前は、時期によって Write と Edit があるので、`"A|B"` で候補を並べられる
 //! - 出力：`id`、`value`、`r2_secret_access_key`（値の SHA-256。R2 の S3 の鍵のシークレット。ID がアクセスキー）
 //! - state：`id`（消すときに使う）
+//! - `expiry_seconds`（任意）：作ってからこの秒数で切れるトークンにする（Cloudflare の `expires_on`）。切れる時刻を
+//!   `expires` で返す
 //!
 //! 型 `tunnel_token`（managed）：Cloudflare Tunnel のトークン（cloudflared がつなぐときの名乗り）。
 //! Tunnel は Terraform が作る（`config_src = cloudflare`）。トークンは「アカウント・Tunnel の ID・秘密」をまとめたもので、
@@ -81,6 +83,9 @@ const WIDGET_MODES: [&str; 3] = ["managed", "non-interactive", "invisible"];
 struct TokenConfig {
     name: String,
     policies: Vec<Policy>,
+    /// Make the token stop working this many seconds after it is created (Cloudflare's `expires_on`)
+    #[serde(default)]
+    expiry_seconds: Option<u64>,
 }
 
 const ACCOUNT_SCOPE: &str = "com.cloudflare.api.account";
@@ -283,6 +288,7 @@ impl Cloudflare {
         Ok(Created {
             outputs: BTreeMap::from([("value".to_owned(), value)]),
             state: json!({ "tunnel_id": id, "rotated_at": rotated_at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true) }),
+            expires: None,
         })
     }
 
@@ -387,6 +393,7 @@ impl Cloudflare {
                 ("secret".to_owned(), secret.to_owned()),
             ]),
             state: json!({ "sitekey": sitekey }),
+            expires: None,
         })
     }
 
@@ -515,12 +522,21 @@ impl Provider for Cloudflare {
             cfg.name,
             chrono::Utc::now().format("%Y-%m-%d %H:%M UTC")
         );
+        let mut body = json!({ "name": name, "policies": policies });
+        if let Some(secs) = cfg.expiry_seconds {
+            anyhow::ensure!(secs > 0, "config.expiry_seconds must be more than 0");
+            let at = chrono::Utc::now()
+                + chrono::TimeDelta::seconds(
+                    i64::try_from(secs).context("config.expiry_seconds is too large")?,
+                );
+            body["expires_on"] = json!(at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true));
+        }
         let v = self
             .http(
                 &token,
                 reqwest::Method::POST,
                 &format!("/accounts/{account}/tokens"),
-                Some(json!({ "name": name, "policies": policies })),
+                Some(body.clone()),
             )
             .await?;
         let id = v["id"]
@@ -537,6 +553,11 @@ impl Provider for Cloudflare {
                 ("r2_secret_access_key".to_owned(), sha256_hex(value)),
             ]),
             state: json!({ "id": id }),
+            // What Cloudflare recorded, or what was asked for
+            expires: v["expires_on"]
+                .as_str()
+                .or(body["expires_on"].as_str())
+                .map(str::to_owned),
         })
     }
 

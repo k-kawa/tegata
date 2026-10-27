@@ -97,6 +97,7 @@ impl Provider for Aws {
                 ("password".to_owned(), smtp_password(secret, region)),
             ]),
             state: json!({ "user": user, "access_key_id": id }),
+            expires: None,
         })
     }
 

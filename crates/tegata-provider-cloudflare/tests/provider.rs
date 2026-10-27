@@ -119,6 +119,23 @@ async fn creates_and_deletes_tokens() {
         body["policies"][2]["resources"]["com.cloudflare.api.account.zone.z1"],
         "*"
     );
+    assert!(body.get("expires_on").is_none(), "{body}");
+    assert!(res.get("expires").is_none(), "{res}");
+
+    // expiry_seconds: the token expires, and the provider says when
+    let mut req = base.clone();
+    req["op"] = json!("create");
+    req["config"]["expiry_seconds"] = json!(86400);
+    let res = call(&api, req).await;
+    let body = fake.created.lock().unwrap()[1].clone();
+    let on = body["expires_on"].as_str().unwrap();
+    let at = chrono::DateTime::parse_from_rfc3339(on).unwrap();
+    let left = at.with_timezone(&chrono::Utc) - chrono::Utc::now();
+    assert!(
+        left > chrono::TimeDelta::hours(23) && left <= chrono::TimeDelta::hours(24),
+        "{on}"
+    );
+    assert_eq!(res["expires"], on);
 
     let mut req = base.clone();
     req["op"] = json!("delete");

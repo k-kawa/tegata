@@ -17,6 +17,8 @@ pub struct SecretMeta {
 pub struct Version {
     pub number: u64,
     pub enabled: bool,
+    /// When the version was added (None when the store does not say)
+    pub created: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 #[async_trait::async_trait]

@@ -5,7 +5,7 @@ Every command of `tegata`, its options, and what it prints. The outputs below we
 | Command | Synopsis | Changes the store | Runs providers |
 | --- | --- | --- | --- |
 | [`init`](#tegata-init) | `tegata init [--upgrade]` | no | no (installs them) |
-| [`check`](#tegata-check) | `tegata check [<identity> <templates>]` | no | `describe` |
+| [`check`](#tegata-check) | `tegata check [<identity> <templates>]`, `tegata check --stale [--json]` | no | `describe` (none with `--stale`) |
 | [`status`](#tegata-status) | `tegata status` | no | `describe` |
 | [`apply`](#tegata-apply) | `tegata apply [--yes \| --dry-run]` | yes | `create`, `read` |
 | [`rotate`](#tegata-rotate) | `tegata rotate [--yes \| --dry-run] <resource>...` | yes | `create` |
@@ -35,7 +35,7 @@ Environment variables: see [the configuration reference](configuration.md#enviro
 | Status | Meaning |
 | --- | --- |
 | 0 | Success |
-| 1 | An error, printed as `error: ...` on standard error. `check` also exits 1 when it finds problems |
+| 1 | An error, printed as `error: ...` on standard error. `check` also exits 1 when it finds problems, and `check --stale` when a resource is past due |
 | 2 | A usage error, such as an unknown option |
 | 3 | `render --exit-code`: a file changed |
 
@@ -90,6 +90,7 @@ TEGATA_PROVIDER_MIRROR=/mnt/mirror tegata init   # a machine without internet ac
 
 ```text
 tegata check [<identity> <templates>]
+tegata check --stale [--json]
 ```
 
 Checks the configuration and changes nothing: the YAML loads, and every provider answers `describe` and has the resource's `type`. Prints `ok`, or one problem per line and exits 1.
@@ -114,21 +115,60 @@ $ tegata check app templates/app
 ok (staging, production)
 ```
 
+### `--stale`
+
+Checks the age of each resource's latest generation instead (see [Rotation age](configuration.md#rotation-age)). A resource older than its `max_age`, or past the expiry its provider reported, is a problem: it is printed with the command that rotates it, and `check` exits 1. A resource within `warn_before` of either is printed as a warning, which does not fail the check.
+
+```text
+$ tegata check --stale
+warning: join_key: generation 2 is 3 days old, expires in 4 days; due soon: tegata rotate join_key
+session_key: generation 4 is 97 days old (max 90d); rotate it now: tegata rotate session_key
+error: 1 past due
+see: https://github.com/k-kawa/tegata/blob/main/docs/guides/rotating-secrets.md#rotating-on-a-schedule
+```
+
+It reads only the store's metadata, never values, and runs no providers, so an identity with read-only access to the metadata is enough (on Secret Manager, `roles/secretmanager.viewer`). Without `-e`, a configuration with environments is checked in every environment.
+
+| Option | Description |
+| --- | --- |
+| `--stale` | Check rotation age only |
+| `--json` | With `--stale`: print the resources that are due or past due as JSON on standard output, for notifications. The exit status is the same |
+
+```json
+{
+  "resources": [
+    {
+      "environment": "production",
+      "resource": "session_key",
+      "provider": "random",
+      "generation": 4,
+      "created": "2026-07-01T09:30:00Z",
+      "age_seconds": 8380800,
+      "max_age": "90d",
+      "standing": "rotate_now",
+      "command": "tegata rotate session_key"
+    }
+  ]
+}
+```
+
+`standing` is `due`, `rotate_now` or `expired`. `environment`, `max_age` and `expires` are left out when there are none.
+
 ## tegata status
 
 ```text
 tegata status
 ```
 
-For each resource: its provider and type, the latest generation, and how many older generations wait for `prune`. For each secret: the latest enabled version and the identities that read it. Then the secrets labeled `managed-by=tegata` that are no longer in the YAML, then the state of each [destination](configuration.md#destinations).
+For each resource: its provider and type, the latest generation, how many older generations wait for `prune`, how old the latest generation is, its `max_age` and the provider's expiry if any, and a mark when a rotation is due (`DUE`, `ROTATE NOW`, `EXPIRED`; see [Rotation age](configuration.md#rotation-age)). For each secret: the latest enabled version and the identities that read it. Then the secrets labeled `managed-by=tegata` that are no longer in the YAML, then the state of each [destination](configuration.md#destinations).
 
 ```text
 $ tegata status
-admin_password (manual) generation 1
+admin_password (manual) generation 1, 3 days old
   ADMIN_PASSWORD                   v1           app
 mail (value) -
   MAIL_FROM                        v1           app
-session_key (random) generation 2 (+1 to prune)
+session_key (random) generation 2 (+1 to prune), 97 days old (max 90d): ROTATE NOW
   SESSION_KEY                      v2           app
   PREVIOUS_SESSION_KEY             v1           app
 ```

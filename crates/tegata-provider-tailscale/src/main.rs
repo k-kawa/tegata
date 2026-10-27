@@ -4,7 +4,7 @@
 //! - 鍵：`client_id`、`client_secret`（OAuth client。Auth Keys: Write と、付けるタグ）
 //! - config：`tags`、`reusable`（既定 false）、`ephemeral`（既定 false）、`preauthorized`（既定 true）、
 //!   `expiry_seconds`（既定 7 日）、`description`
-//! - 出力：`key`。state：`id`
+//! - 出力：`key`。state：`id`。鍵が切れる時刻を `expires` で返す
 //!
 //! 試験では TEGATA_TAILSCALE_API で API の場所を替える
 
@@ -14,6 +14,9 @@ use std::time::Duration;
 use anyhow::Context;
 use serde_json::{json, Value};
 use tegata_plugin::{Created, Kind, Provider, Request};
+
+/// Tailscale's default lifetime of an auth key: 7 days
+const DEFAULT_EXPIRY: u64 = 7 * 24 * 3600;
 
 struct Tailscale {
     api: String,
@@ -55,6 +58,8 @@ impl Provider for Tailscale {
             !tags.is_empty(),
             "config.tags is required (keys made by OAuth clients must have tags)"
         );
+        let expiry_seconds = c["expiry_seconds"].as_u64().unwrap_or(DEFAULT_EXPIRY);
+        let requested_at = chrono::Utc::now();
         let body = json!({
             "capabilities": { "devices": { "create": {
                 "reusable": c["reusable"].as_bool().unwrap_or(false),
@@ -62,7 +67,7 @@ impl Provider for Tailscale {
                 "preauthorized": c["preauthorized"].as_bool().unwrap_or(true),
                 "tags": tags,
             } } },
-            "expirySeconds": c["expiry_seconds"].as_u64().unwrap_or(7 * 24 * 3600),
+            "expirySeconds": expiry_seconds,
             "description": c["description"].as_str().unwrap_or(&req.resource),
         });
         let res = self
@@ -90,6 +95,15 @@ impl Provider for Tailscale {
         Ok(Created {
             outputs: BTreeMap::from([("key".to_owned(), key.to_owned())]),
             state: json!({ "id": id }),
+            // Tailscale says when the key expires; otherwise, from expiry_seconds
+            expires: Some(match v["expires"].as_str() {
+                Some(t) => t.to_owned(),
+                None => (requested_at
+                    + chrono::TimeDelta::seconds(
+                        i64::try_from(expiry_seconds).unwrap_or(i64::MAX / 1_000),
+                    ))
+                .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            }),
         })
     }
 

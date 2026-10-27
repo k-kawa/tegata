@@ -134,6 +134,7 @@ async fn handle(State(f): State<Arc<Fake>>, req: Request) -> Response {
             json!({ "versions": s.versions.iter().map(|(n, _, e)| json!({
             "name": format!("projects/proj/secrets/{name}/versions/{n}"),
             "state": if *e { "ENABLED" } else { "DISABLED" },
+            "createTime": format!("2026-10-0{n}T09:30:00.123456Z"),
         })).collect::<Vec<_>>() }),
         )
         .into_response(),
@@ -201,6 +202,11 @@ async fn talks_to_secret_manager() {
     assert_eq!(store.access("A", Some(2)).await.unwrap(), None);
     let vs = store.versions("A").await.unwrap();
     assert_eq!(vs.len(), 2);
+    // Secret Manager's createTime is each version's age
+    assert_eq!(
+        vs[0].created.map(|t| t.to_rfc3339()).as_deref(),
+        Some("2026-10-01T09:30:00.123456+00:00")
+    );
     let mut meta = store.get("A").await.unwrap().unwrap();
     assert_eq!(meta.labels["managed-by"], "tegata");
     meta.annotations.insert("tegata-gen-1".into(), "{}".into());

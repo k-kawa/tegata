@@ -25,6 +25,9 @@ struct StoredVersion {
     number: u64,
     enabled: bool,
     value: String,
+    /// Versions written before tegata recorded the time have none
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    created: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 impl LocalStore {
@@ -128,6 +131,7 @@ impl Store for LocalStore {
             number,
             enabled: true,
             value: value.to_owned(),
+            created: Some(crate::age::now()),
         });
         self.save(name, &s)?;
         Ok(number)
@@ -157,6 +161,7 @@ impl Store for LocalStore {
                     .map(|v| Version {
                         number: v.number,
                         enabled: v.enabled,
+                        created: v.created,
                     })
                     .collect()
             })

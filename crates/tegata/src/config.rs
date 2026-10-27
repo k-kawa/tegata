@@ -13,6 +13,8 @@ use std::path::{Path, PathBuf};
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
 
+use crate::age::Span;
+
 /// The configuration, in one shape whichever form the file was written in
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -34,6 +36,39 @@ pub struct Config {
     pub environment: Option<String>,
     /// Commands that change the store ask first (`confirm: true` in the environment)
     pub confirm: bool,
+    /// What applies to every resource unless it says otherwise
+    pub defaults: Defaults,
+}
+
+/// `defaults`: rotation age for every resource that makes its values
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Defaults {
+    /// The longest a generation may live, for resources without their own `max_age`
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_age: Option<Span>,
+    /// How long before `max_age` (or the provider's expiry) a generation is shown as due
+    #[serde(default = "default_warn_before")]
+    pub warn_before: Span,
+}
+
+impl Default for Defaults {
+    fn default() -> Self {
+        Self {
+            max_age: None,
+            warn_before: default_warn_before(),
+        }
+    }
+}
+
+fn default_warn_before() -> Span {
+    Span::from_days(14)
+}
+
+impl Defaults {
+    fn is_default(&self) -> bool {
+        self.max_age.is_none() && self.warn_before == default_warn_before()
+    }
 }
 
 /// One or more IAM members that read secrets
@@ -208,6 +243,15 @@ pub struct Resource {
     pub previous: Option<String>,
     /// Secret name → the identities that read it (the current form; `previous` included)
     pub readers: BTreeMap<String, BTreeSet<String>>,
+    /// The longest a generation may live (`max_age`)
+    pub max_age: Option<Span>,
+}
+
+impl Config {
+    /// The longest a generation of the resource may live: its own `max_age`, or the default
+    pub fn max_age(&self, res: &Resource) -> Option<Span> {
+        res.max_age.or(self.defaults.max_age)
+    }
 }
 
 impl Resource {
@@ -250,6 +294,8 @@ struct RawConfig {
     /// Only from an environment's overrides
     #[serde(default)]
     confirm: bool,
+    #[serde(default)]
+    defaults: Defaults,
 }
 
 #[derive(Debug, Deserialize)]
@@ -274,6 +320,8 @@ struct RawResource {
     stores: Option<BTreeMap<String, Vec<StoredSecret>>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     previous: Option<RawPrevious>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    max_age: Option<Span>,
 }
 
 /// One secret of a resource in one store
@@ -324,6 +372,8 @@ struct CurrentForm<'a> {
     providers: &'a BTreeMap<String, ProviderConfig>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     credential_sources: &'a BTreeMap<String, CredentialSource>,
+    #[serde(skip_serializing_if = "Defaults::is_default")]
+    defaults: &'a Defaults,
     resources: BTreeMap<&'a str, RawResource>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     destinations: &'a BTreeMap<String, Destination>,
@@ -439,6 +489,7 @@ impl RawConfig {
                     secrets,
                     previous,
                     readers,
+                    max_age: r.max_age,
                 },
             );
         }
@@ -454,6 +505,7 @@ impl RawConfig {
                 readers_from_templates: old,
                 environment: None,
                 confirm: self.confirm,
+                defaults: self.defaults,
             },
             warnings,
         ))
@@ -569,6 +621,10 @@ impl Loaded {
                 }
             }
         }
+        anyhow::ensure!(
+            !self.config.defaults.max_age.is_some_and(Span::is_zero),
+            "defaults: max_age must be longer than 0"
+        );
         let mut owner: BTreeMap<String, &str> = BTreeMap::new();
         for (name, res) in &self.config.resources {
             anyhow::ensure!(
@@ -576,6 +632,14 @@ impl Loaded {
                 "resource name {name:?}: use lowercase letters, digits, - and _ (up to 63)"
             );
             anyhow::ensure!(!res.secrets.is_empty(), "resource {name}: no secrets");
+            anyhow::ensure!(
+                res.max_age.is_none() || res.provider != "value",
+                "resource {name}: value resources are read, not made, so they have no max_age"
+            );
+            anyhow::ensure!(
+                !res.max_age.is_some_and(Span::is_zero),
+                "resource {name}: max_age must be longer than 0"
+            );
             anyhow::ensure!(
                 matches!(res.provider.as_str(), "random" | "manual" | "value")
                     || self.config.providers.contains_key(&res.provider),
@@ -752,6 +816,7 @@ impl Loaded {
                     secrets: None,
                     stores: Some(BTreeMap::from([(c.store_name.clone(), entries)])),
                     previous: r.previous.clone().map(|name| RawPrevious::Full { name }),
+                    max_age: r.max_age,
                 },
             );
         }
@@ -760,6 +825,7 @@ impl Loaded {
             identities,
             providers: &c.providers,
             credential_sources: &c.credential_sources,
+            defaults: &c.defaults,
             resources,
             destinations: &c.destinations,
         };
@@ -1058,6 +1124,39 @@ resources:
 
         assert!(err("store: { local: { dir: s } }\nresources:\n  a: { provider: random, secrets: { A: value } }\n  b: { provider: manual, secrets: { A: value } }\n").contains("in both"));
         assert!(err("store: { local: { dir: s } }\nresources:\n  a: { provider: nope, secrets: { A: value } }\n").contains("unknown provider"));
+    }
+
+    #[test]
+    fn reads_rotation_ages() {
+        let loaded = load(
+            r#"
+store: { local: { dir: store } }
+defaults: { max_age: 180d }
+resources:
+  a: { provider: random, secrets: { A: value }, max_age: 90d }
+  b: { provider: manual, secrets: { B: value } }
+"#,
+        )
+        .unwrap();
+        let c = &loaded.config;
+        assert_eq!(c.max_age(&c.resources["a"]).unwrap().to_string(), "90d");
+        assert_eq!(c.max_age(&c.resources["b"]).unwrap().to_string(), "180d");
+        assert_eq!(c.defaults.warn_before.to_string(), "14d");
+        let (yaml, _) = loaded.migrate().unwrap();
+        assert!(yaml.contains("max_age: 90d"), "{yaml}");
+        assert!(yaml.contains("defaults:\n  max_age: 180d"), "{yaml}");
+
+        let base = "store: { local: { dir: s } }\nresources:\n";
+        assert!(err(&format!("{base}  a: {{ provider: value, config: {{ x: y }}, secrets: {{ A: x }}, max_age: 1d }}\n")).contains("no max_age"));
+        assert!(err(&format!(
+            "{base}  a: {{ provider: random, secrets: {{ A: value }}, max_age: 0d }}\n"
+        ))
+        .contains("longer than 0"));
+        assert!(err(&format!(
+            "{base}  a: {{ provider: random, secrets: {{ A: value }}, max_age: 3w }}\n"
+        ))
+        .contains("not a length of time"));
+        assert!(err(&format!("defaults: {{ max_ages: 1d }}\n{base}  a: {{ provider: random, secrets: {{ A: value }} }}\n")).contains("unknown field"));
     }
 
     #[test]

@@ -801,3 +801,115 @@ resources:
     assert_eq!(code, Some(0), "{out}");
     assert!(out.contains("not in the store: NOT_THERE"), "{out}");
 }
+
+/// Makes the latest generation of a secret look this many days old (the directory store's file)
+fn age_generation(dir: &Path, secret: &str, days: i64) {
+    let path = dir.join("store").join(format!("{secret}.json"));
+    let mut file: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    let annotations = file["meta"]["annotations"].as_object_mut().unwrap();
+    let (key, record) = annotations
+        .iter()
+        .filter(|(k, _)| k.starts_with("tegata-gen-"))
+        .max_by_key(|(k, _)| k["tegata-gen-".len()..].parse::<u64>().unwrap())
+        .map(|(k, v)| (k.clone(), v.as_str().unwrap().to_owned()))
+        .unwrap();
+    let mut record: serde_json::Value = serde_json::from_str(&record).unwrap();
+    let created = chrono::Utc::now() - chrono::TimeDelta::days(days) - chrono::TimeDelta::hours(1);
+    record["created"] = serde_json::json!(created.to_rfc3339());
+    annotations.insert(key, serde_json::json!(record.to_string()));
+    std::fs::write(&path, serde_json::to_vec(&file).unwrap()).unwrap();
+}
+
+#[test]
+fn checks_rotation_age() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    std::fs::write(
+        dir.join("tegata.yaml"),
+        r#"
+stores: { main: { local: { dir: store } } }
+defaults: { warn_before: 10d }
+resources:
+  session: { provider: random, stores: { main: [{ name: SESSION_KEY }] }, max_age: 90d }
+  login: { provider: manual, stores: { main: [{ name: LOGIN }] }, max_age: 30d }
+  forever: { provider: random, stores: { main: [{ name: FOREVER }] } }
+  fixed: { provider: value, config: { from: "a@example.com" }, stores: { main: [{ output: from, name: FROM }] } }
+"#,
+    )
+    .unwrap();
+    let (ok, out) = tegata(dir, &["apply"], None);
+    assert!(ok, "{out}");
+    let (ok, out) = tegata(dir, &["set", "login"], Some("pw"));
+    assert!(ok, "{out}");
+
+    let (ok, out) = tegata(dir, &["check", "--stale"], None);
+    assert!(ok, "{out}");
+    assert_eq!(out.trim(), "ok");
+    let (ok, out) = tegata(dir, &["status"], None);
+    assert!(ok, "{out}");
+    assert!(
+        out.contains("session (random) generation 1, less than a minute old (max 90d)\n"),
+        "{out}"
+    );
+    assert!(out.contains("fixed (value) -\n"), "{out}");
+
+    // Due within warn_before: a warning, and check still passes
+    age_generation(dir, "SESSION_KEY", 85);
+    let (ok, out) = tegata(dir, &["check", "--stale"], None);
+    assert!(ok, "{out}");
+    assert!(
+        out.contains("warning: session: generation 1 is 85 days old (max 90d); due soon: tegata rotate session"),
+        "{out}"
+    );
+
+    // Past max_age: check fails, and says how to rotate (set, for manual)
+    age_generation(dir, "LOGIN", 31);
+    let (ok, out) = tegata(dir, &["check", "--stale"], None);
+    assert!(!ok, "{out}");
+    assert!(
+        out.contains(
+            "login: generation 1 is 31 days old (max 30d); rotate it now: tegata set login"
+        ),
+        "{out}"
+    );
+    assert!(out.contains("error: 1 past due"), "{out}");
+    let (_, out) = tegata(dir, &["status"], None);
+    assert!(
+        out.contains("login (manual) generation 1, 31 days old (max 30d): ROTATE NOW"),
+        "{out}"
+    );
+    assert!(
+        out.contains("session (random) generation 1, 85 days old (max 90d): DUE"),
+        "{out}"
+    );
+
+    // JSON: only what is due or past due
+    let mut json = Command::new(env!("CARGO_BIN_EXE_tegata"))
+        .arg("-f")
+        .arg(dir.join("tegata.yaml"))
+        .args(["check", "--stale", "--json"])
+        .output()
+        .unwrap();
+    assert!(!json.status.success());
+    let v: serde_json::Value = serde_json::from_slice(&std::mem::take(&mut json.stdout)).unwrap();
+    let list = v["resources"].as_array().unwrap();
+    assert_eq!(list.len(), 2, "{v}");
+    assert_eq!(list[0]["resource"], "login");
+    assert_eq!(list[0]["standing"], "rotate_now");
+    assert_eq!(list[0]["max_age"], "30d");
+    assert_eq!(list[0]["command"], "tegata set login");
+    assert_eq!(list[1]["resource"], "session");
+    assert_eq!(list[1]["standing"], "due");
+
+    // A new generation is young again
+    let (ok, out) = tegata(dir, &["set", "login"], Some("pw2"));
+    assert!(ok, "{out}");
+    let (ok, out) = tegata(dir, &["check", "--stale"], None);
+    assert!(ok, "{out}");
+
+    assert!(
+        !tegata(dir, &["check", "--json"], None).0,
+        "--json goes with --stale"
+    );
+}

@@ -4,6 +4,15 @@ All notable changes to tegata and the providers in this repository, which share 
 
 ## [Unreleased]
 
+### Added
+
+- **Rotation age** (#7): each generation records when it was made, and `max_age` on a resource (or `defaults.max_age`) says how old it may get. `tegata status` shows each generation's age and marks it `DUE`, `ROTATE NOW` or `EXPIRED`. `tegata check --stale` exits 1 when a resource is older than its `max_age` or past its provider's expiry, and warns about those due within `defaults.warn_before` (default 14 days); `--json` prints them for notifications. It reads only metadata, so it can run in a scheduled CI job with read-only access ([Rotating on a schedule](docs/guides/rotating-secrets.md#rotating-on-a-schedule)). Generations made before this release are as old as their versions in the store.
+- Providers can report when a value expires: `create` may return `expires` (RFC 3339), and tegata records it with the generation. The provider protocol stays at version 1. `tailscale/auth_key` reports the key's expiry (7 days by default), and `cloudflare/api_token` has a new `expiry_seconds`.
+
+### Changed
+
+- `tegata_plugin::Created` has a new field, `expires`. Rust providers that build it with a struct literal add `expires: None` (or `..Default::default()`).
+
 ## [0.4.0] - 2026-10-20
 
 0.4.0 adds a provider type for Turnstile. Configurations written for 0.3 work unchanged.

@@ -131,6 +131,7 @@ impl<'a> Providers<'a> {
                 Ok(Created {
                     outputs: r.outputs,
                     state: r.state,
+                    expires: r.expires,
                 })
             }
         }
@@ -340,6 +341,7 @@ fn random(res: &Resource) -> anyhow::Result<Created> {
             .map(|out| (out.clone(), value.clone()))
             .collect(),
         state: serde_json::Value::Null,
+        expires: None,
     })
 }
 
@@ -366,5 +368,6 @@ pub fn manual(res: &Resource) -> anyhow::Result<Created> {
     Ok(Created {
         outputs,
         state: serde_json::Value::Null,
+        expires: None,
     })
 }

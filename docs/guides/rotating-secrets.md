@@ -11,7 +11,7 @@ How to replace a secret with a new value without breaking the services that use 
 
 "Render" means: run `tegata render` on every server that uses the secret and restart (or reload) the services that read the files. With `tegata render` on a timer and `--on-change`, the servers do this by themselves within a few minutes ([Running on servers](running-on-servers.md)). GitHub Actions secrets ([destinations](../reference/configuration.md#destinations)) need nothing: tegata writes the new value during `rotate`, `settle` and `set`, and workflows use it from their next run.
 
-`tegata status` shows where each resource is: `generation 2 (+1 to prune)` means a rotation has not been cleaned up yet.
+`tegata status` shows where each resource is: `generation 2 (+1 to prune)` means a rotation has not been cleaned up yet, and `97 days old (max 90d): ROTATE NOW` that a rotation is due ([Rotating on a schedule](#rotating-on-a-schedule)).
 
 ## Keys your service checks: rotate, settle, prune
 
@@ -79,6 +79,43 @@ tegata prune admin_password
 ```
 
 If the resource has `previous`, `set` copies the current value there first, as `rotate` does, and the steps of the first section apply.
+
+## Rotating on a schedule
+
+Rotation that depends on someone remembering stops happening. Give resources a `max_age`, and let a scheduled job tell you when one is due:
+
+```yaml
+defaults:
+  max_age: 180d          # every resource that makes its values
+  warn_before: 14d       # shown as due this long before (the default)
+resources:
+  session_key:
+    provider: random
+    stores: { main: [{ name: SESSION_KEY, readers: [app] }] }
+    max_age: 90d
+```
+
+`tegata check --stale` exits 1 when a resource is older than its `max_age`, or past the expiry its provider reported (Tailscale auth keys expire after 7 days by default), and prints those due within `warn_before` as warnings. A weekly GitHub Actions job:
+
+```yaml
+on:
+  schedule: [{ cron: "0 0 * * 1" }]
+jobs:
+  stale:
+    runs-on: ubuntu-latest
+    permissions: { id-token: write, contents: read }
+    steps:
+      - uses: actions/checkout@v5
+      - uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: projects/123456789/locations/global/workloadIdentityPools/github/providers/github
+          service_account: tegata-audit@myapp-production.iam.gserviceaccount.com
+      - run: tegata -e production check --stale
+```
+
+The job reads only metadata, never values, so its service account needs only `roles/secretmanager.viewer`, and no provider credentials. A failed run is the reminder: rotate the resources it names with the steps above. For notifications elsewhere, `tegata check --stale --json` prints the resources that are due as JSON ([the command reference](../reference/commands.md#--stale)).
+
+The check only reminds you; you still run the rotation, since it may need a render and a restart on servers. With `tegata render` on a timer ([Running on servers](running-on-servers.md)), servers pick up new values on their own.
 
 ## If something goes wrong
 
