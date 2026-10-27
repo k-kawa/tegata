@@ -357,6 +357,10 @@ impl Store for GcpStore {
                     all.push(Version {
                         number: n,
                         enabled: state == "ENABLED",
+                        created: ver["createTime"]
+                            .as_str()
+                            .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
+                            .map(|t| t.with_timezone(&chrono::Utc)),
                     });
                 }
             }

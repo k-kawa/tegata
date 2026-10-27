@@ -7,6 +7,7 @@ stores: { ... }     # where secrets are stored (required; one store for now)
 identities: { ... } # who reads secrets (optional)
 providers: { ... }  # external providers (optional; random, manual and value are built in)
 resources: { ... }  # what to create, where to store it, and who reads it (required)
+defaults: { ... }   # how old a generation may get, for every resource (optional)
 destinations: { ... } # where copies of secrets are written, such as GitHub Actions secrets (optional)
 environments: { ... } # staging, production, ...: what differs between them (optional)
 ```
@@ -168,6 +169,7 @@ The resource's name (`session_key`) may use lowercase letters, digits, `-`, and 
 | `type` | The provider's resource type (`api_token`, ...). Leave it out for the built-in providers |
 | `config` | Settings for this resource, passed to the provider as `config` |
 | `stores.<store>` | The secrets in that store: a list of entries, at least one (see below) |
+| `max_age` | Optional. The longest a generation may live before it should be rotated: a number and `s`, `m`, `h` or `d` (`90d`). `tegata status` marks older generations, and `tegata check --stale` fails on them (see [Rotation age](#rotation-age)). Default: `defaults.max_age`. Not for `value` resources, which are read, not made |
 | `previous` | Optional. `{ name: <secret> }`: a secret in the same store that keeps the value before the last rotation, so services can accept both the old and the new value for a while (see [Rotating secrets](../guides/rotating-secrets.md#keys-your-service-checks-rotate-settle-prune)). It holds the value of the resource's first secret by name order, and is read by the same readers. When a resource needs it: [When a secret needs `previous`](../concepts/previous-and-settle.md) |
 
 Each entry under `stores.<store>`:
@@ -189,6 +191,21 @@ Secret names may use letters, digits, `-`, and `_`, up to 255 characters. To use
 | `random` | `bytes`: 8 to 256, default 32 | Random bytes from the operating system, as lowercase hex (so 32 bytes become 64 characters). Every output name gets the same value, so `output` can be left out |
 | `manual` | none | A value you put with `tegata set <resource>`. `apply` creates the secret but not the value |
 | `value` | A map of output name → string | The strings themselves. For non-secret values that templates need next to secrets (a sender address, a bucket name). Read again on every `apply` |
+
+## `defaults`
+
+Settings for every resource that does not set its own.
+
+```yaml
+defaults:
+  max_age: 180d     # resources without their own max_age
+  warn_before: 14d  # how long before max_age (or expiry) a generation shows as due
+```
+
+| Key | Description |
+| --- | --- |
+| `max_age` | Optional. The `max_age` of resources that do not set one. Applies to resources that make their values (`random`, `manual`, and managed provider types); `data` resources never go stale |
+| `warn_before` | How long before `max_age`, or before the provider's expiry, a generation is shown as due. Default `14d` |
 
 ## `environments`
 
@@ -339,6 +356,18 @@ Each time a managed resource makes new values, the values form a **generation**:
 | `set <resource>` | Puts a value by hand as a new generation. Generations put by hand (or by `import`) for an external provider are not deleted by `prune`, since tegata did not make them; prune tells you to clean them up by hand |
 
 The steps of a rotation, for each kind of value: [Rotating secrets](../guides/rotating-secrets.md).
+
+### Rotation age
+
+Each generation records when it was made (`created`, in the annotation of the resource's first secret), and when its value expires if the provider reports it (`expires`; for example `tailscale/auth_key`, and `cloudflare/api_token` with `expiry_seconds`). Generations made before tegata recorded the time are as old as the version they added, as the store reports it.
+
+| Mark in `tegata status` | Meaning | `tegata check --stale` |
+| --- | --- | --- |
+| `DUE` | Within `warn_before` of `max_age`, or of the expiry | Warning |
+| `ROTATE NOW` | Older than `max_age` | Fails |
+| `EXPIRED` | Past the expiry the provider reported: the value no longer works | Fails |
+
+A rotation is `tegata rotate <resource>`, or `tegata set <resource>` for `manual` resources; the new generation's age starts again. `data` resources (`value`, `terraform`) have no generations and never go stale. `max_age` and `defaults` are the same in every environment. Running the check on a schedule: [Rotating on a schedule](../guides/rotating-secrets.md#rotating-on-a-schedule).
 
 **Values that stop working at once.** Some providers declare types that can hold only one value (a database user's password, a Cloudflare Tunnel's secret): making a new one breaks the old value immediately. Before `apply` or `rotate` makes such a value, tegata shows what will break and who reads it, and asks you to type `yes`. `--yes` skips the question (for scripts); `--dry-run` only shows what would be made. Outside a terminal, without `--yes`, tegata refuses.
 

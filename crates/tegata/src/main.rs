@@ -75,7 +75,7 @@ enum Command {
         #[arg(long)]
         upgrade: bool,
     },
-    /// Check the configuration and providers; with an identity and templates, also that the identity can read every name in them
+    /// Check the configuration and providers; with an identity and templates, also that the identity can read every name in them; with --stale, the age of each resource instead
     #[command(after_help = command_help!("check"))]
     Check {
         /// An identity in the config
@@ -83,6 +83,12 @@ enum Command {
         identity: Option<String>,
         /// The templates it renders (a directory, as given to `tegata render`)
         templates: Option<PathBuf>,
+        /// Fail if a resource is past its max_age or its provider's expiry, and warn about those due within warn_before. Reads only the store's metadata
+        #[arg(long, conflicts_with_all = ["identity", "templates"])]
+        stale: bool,
+        /// With --stale: print the resources that are due or past due as JSON
+        #[arg(long, requires = "stale")]
+        json: bool,
     },
     /// Show each resource and secret: generations, enabled versions, readers
     #[command(after_help = command_help!("status"))]
@@ -321,11 +327,25 @@ async fn run(cli: Cli) -> Result<(), Failed> {
         }
     }
     let env = match (&cli.command, cli.environment.as_deref()) {
+        (
+            Command::Check {
+                stale: true, json, ..
+            },
+            env,
+        ) => {
+            let envs: Vec<Option<&str>> = match env {
+                Some(e) => vec![Some(e)],
+                None if names.is_empty() => vec![None],
+                None => names.iter().map(|n| Some(n.as_str())).collect(),
+            };
+            return check_stale(&cli.file, &envs, *json).await;
+        }
         // Without -e, check looks at every environment, and they are compared with each other
         (
             Command::Check {
                 identity,
                 templates,
+                ..
             },
             None,
         ) if !names.is_empty() => {
@@ -390,6 +410,7 @@ async fn run(cli: Cli) -> Result<(), Failed> {
         Command::Check {
             identity,
             templates,
+            ..
         } => {
             let pair = identity.as_deref().zip(templates.as_deref());
             let problems = report(&engine.check(pair).await?, "");
@@ -450,6 +471,61 @@ fn report(checked: &tegata::engine::Checked, prefix: &str) -> usize {
         println!("{prefix}{p}");
     }
     checked.problems.len()
+}
+
+/// `tegata check --stale`: the age of each resource in each of these environments. Past due
+/// fails; due soon is a warning
+async fn check_stale(
+    file: &std::path::Path,
+    envs: &[Option<&str>],
+    json: bool,
+) -> Result<(), Failed> {
+    let mut all = Vec::new();
+    for env in envs {
+        let l = Loaded::load_env(file, *env).map_err(|error| Failed {
+            error,
+            docs: Some(docs!("reference/configuration.md")),
+        })?;
+        for w in &l.warnings {
+            eprintln!("warning: {}: {w}", file.display());
+        }
+        let store = tegata::open_store(&l).await?;
+        all.extend(Engine::new(&l, store.as_ref()).stale().await?);
+    }
+    use tegata::age::Standing;
+    let problems = all.iter().filter(|s| s.standing.is_problem()).count();
+    if json {
+        let due: Vec<_> = all.iter().filter(|s| s.standing != Standing::Ok).collect();
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({ "resources": due }))
+                .map_err(anyhow::Error::from)?
+        );
+    } else {
+        for s in &all {
+            let prefix = s
+                .environment
+                .as_deref()
+                .filter(|_| envs.len() > 1)
+                .map(|e| format!("{e}: "))
+                .unwrap_or_default();
+            match s.standing {
+                Standing::Ok => {}
+                Standing::Due => println!("warning: {prefix}{}", s.message),
+                _ => println!("{prefix}{}", s.message),
+            }
+        }
+    }
+    if problems > 0 {
+        return Err(Failed {
+            error: anyhow::anyhow!("{problems} past due"),
+            docs: Some(docs!("guides/rotating-secrets.md#rotating-on-a-schedule")),
+        });
+    }
+    if !json {
+        println!("ok");
+    }
+    Ok(())
 }
 
 /// `tegata check` without -e: every environment, and environments that share a project or a member

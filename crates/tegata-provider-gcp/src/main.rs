@@ -198,6 +198,7 @@ impl Provider for Gcp {
                 "user": user,
                 "rotated_at": rotated_at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
             }),
+            expires: None,
         })
     }
 

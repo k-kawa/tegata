@@ -53,8 +53,13 @@ async fn creates_and_deletes_auth_keys() {
             post(
                 |State(f): State<Arc<Fake>>, h: HeaderMap, Json(b): Json<Value>| async move {
                     assert_eq!(h["authorization"], "Bearer at");
+                    let reported = b["description"] == "reported";
                     f.created.lock().unwrap().push(b);
-                    Json(json!({ "id": "k1", "key": "tskey-auth-xyz" }))
+                    if reported {
+                        Json(json!({ "id": "k2", "key": "tskey-auth-2", "expires": "2026-10-25T09:30:00Z" }))
+                    } else {
+                        Json(json!({ "id": "k1", "key": "tskey-auth-xyz" }))
+                    }
                 },
             ),
         )
@@ -82,6 +87,13 @@ async fn creates_and_deletes_auth_keys() {
     let res = call(&api, req).await;
     assert_eq!(res["outputs"]["key"], "tskey-auth-xyz");
     assert_eq!(res["state"]["id"], "k1");
+    // Tailscale did not say when the key expires: from expiry_seconds
+    let expires = chrono::DateTime::parse_from_rfc3339(res["expires"].as_str().unwrap()).unwrap();
+    let left = expires.with_timezone(&chrono::Utc) - chrono::Utc::now();
+    assert!(
+        left > chrono::TimeDelta::minutes(59) && left <= chrono::TimeDelta::hours(1),
+        "{res}"
+    );
     let body = fake.created.lock().unwrap()[0].clone();
     assert_eq!(
         body["capabilities"]["devices"]["create"]["tags"][0],
@@ -100,6 +112,12 @@ async fn creates_and_deletes_auth_keys() {
     req["state"] = json!({ "id": "k1" });
     assert!(call(&api, req).await.get("error").is_none());
     assert_eq!(*fake.deleted.lock().unwrap(), vec!["k1".to_owned()]);
+
+    // The expiry Tailscale reports wins
+    let mut req = base.clone();
+    req["op"] = json!("create");
+    req["config"]["description"] = json!("reported");
+    assert_eq!(call(&api, req).await["expires"], "2026-10-25T09:30:00Z");
 
     let mut req = base;
     req["op"] = json!("create");

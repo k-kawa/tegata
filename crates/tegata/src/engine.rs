@@ -3,8 +3,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tegata_plugin::Kind;
+
+use crate::age::{Age, Standing};
 
 use crate::config::{GithubDestination, Loaded, Resource};
 use crate::deliver::github::{Github, GithubAccess, Token};
@@ -30,6 +33,12 @@ pub struct Generation {
     /// 前の形から入れたもの（プロバイダーの state がない）
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub imported: bool,
+    /// When the generation was made (older generations have none)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created: Option<DateTime<Utc>>,
+    /// When the provider said the value stops working, if it does
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires: Option<DateTime<Utc>>,
 }
 
 pub fn generations(meta: &SecretMeta) -> BTreeMap<u64, Generation> {
@@ -73,6 +82,29 @@ pub struct Checked {
     pub warnings: Vec<String>,
 }
 
+/// The age of one resource's latest generation (`check --stale`)
+#[derive(Debug, Clone, Serialize)]
+pub struct Stale {
+    /// The environment (`-e`), if the configuration has environments
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub environment: Option<String>,
+    pub resource: String,
+    pub provider: String,
+    pub generation: u64,
+    pub created: DateTime<Utc>,
+    pub age_seconds: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_age: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires: Option<DateTime<Utc>>,
+    pub standing: Standing,
+    /// What makes a new generation (`tegata rotate <name>`, or `tegata set <name>` for manual)
+    pub command: String,
+    /// One line for people
+    #[serde(skip)]
+    pub message: String,
+}
+
 /// 新しい世代を作る前の確かめ方
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Approval {
@@ -92,6 +124,8 @@ pub struct Engine<'a> {
     pub approval: Approval,
     /// The GitHub token for destinations (read when first needed)
     github: Token,
+    /// The time ages are measured at (tests move it)
+    now: DateTime<Utc>,
 }
 
 /// One secret to deliver: (destination name, where, name there, secret name here)
@@ -105,7 +139,14 @@ impl<'a> Engine<'a> {
             providers: Providers::new(loaded),
             approval: Approval::default(),
             github: Token::new(GithubAccess::from_env()),
+            now: crate::age::now(),
         }
+    }
+
+    /// Measure ages at this time instead of now (for tests)
+    pub fn with_now(mut self, now: DateTime<Utc>) -> Self {
+        self.now = now;
+        self
     }
 
     /// Where destinations reach GitHub (tests point it at a fake server)
@@ -346,8 +387,13 @@ impl<'a> Engine<'a> {
             }
         }
         for (name, res) in &self.loaded.config.resources {
-            if let Err(e) = self.providers.kind(name, res).await {
-                checked.problems.push(format!("{e:#}"));
+            match self.providers.kind(name, res).await {
+                Err(e) => checked.problems.push(format!("{e:#}")),
+                Ok(Kind::Data) if res.max_age.is_some() => checked.warnings.push(format!(
+                    "resource {name}: max_age has no effect, since {} {} is read, not made",
+                    res.provider, res.kind
+                )),
+                Ok(_) => {}
             }
         }
         Ok(checked)
@@ -531,8 +577,18 @@ impl<'a> Engine<'a> {
                 anyhow::bail!("{name}: provider returned no output {out}");
             }
         }
+        let expires = created.expires.as_deref().and_then(|t| {
+            match DateTime::parse_from_rfc3339(t) {
+                Ok(t) => Some(t.with_timezone(&Utc)),
+                Err(_) => {
+                    eprintln!("warning: {name}: the provider returned an expiry that is not RFC 3339 ({t:?}); not recorded");
+                    None
+                }
+            }
+        });
         let mut record = Generation {
             state: created.state.clone(),
+            expires,
             ..Default::default()
         };
         for (secret, out) in &res.secrets {
@@ -547,7 +603,13 @@ impl<'a> Engine<'a> {
     }
 
     /// 世代を最初の秘密の注記に残す。残せなければ state を出す（手で消せるように）
-    async fn record(&self, name: &str, res: &Resource, record: Generation) -> anyhow::Result<()> {
+    async fn record(
+        &self,
+        name: &str,
+        res: &Resource,
+        mut record: Generation,
+    ) -> anyhow::Result<()> {
+        record.created.get_or_insert_with(crate::age::now);
         let result = async {
             let mut meta = self
                 .store
@@ -1105,6 +1167,105 @@ impl<'a> Engine<'a> {
         Ok(())
     }
 
+    /// The latest generation and its age. Generations recorded before tegata kept the time are
+    /// as old as the version they added. Resources without generations (data, or no value yet)
+    /// have no age
+    async fn age(
+        &self,
+        res: &Resource,
+        gens: &BTreeMap<u64, Generation>,
+    ) -> anyhow::Result<Option<(u64, Age)>> {
+        let Some((&n, g)) = gens.iter().next_back() else {
+            return Ok(None);
+        };
+        let created = match g.created {
+            Some(t) => Some(t),
+            None => {
+                let mut found = None;
+                for (secret, v) in &g.versions {
+                    found = self
+                        .store
+                        .versions(secret)
+                        .await?
+                        .into_iter()
+                        .find(|x| x.number == *v)
+                        .and_then(|x| x.created);
+                    if found.is_some() {
+                        break;
+                    }
+                }
+                found
+            }
+        };
+        Ok(created.map(|created| {
+            (
+                n,
+                Age {
+                    created,
+                    expires: g.expires,
+                    max_age: self.loaded.config.max_age(res),
+                },
+            )
+        }))
+    }
+
+    /// The age of every resource with a generation (`check --stale`): past `max_age` or the
+    /// provider's expiry is a problem, and within `warn_before` of either is due
+    pub async fn stale(&self) -> anyhow::Result<Vec<Stale>> {
+        let warn_before = self.loaded.config.defaults.warn_before;
+        let mut out = Vec::new();
+        for (name, res) in &self.loaded.config.resources {
+            if res.provider == "value" {
+                continue;
+            }
+            let gens = match self.store.get(res.primary()).await? {
+                Some(m) => generations(&m),
+                None => continue,
+            };
+            let Some((generation, age)) = self.age(res, &gens).await? else {
+                continue;
+            };
+            let standing = age.standing(self.now, warn_before);
+            let command = if res.provider == "manual" {
+                format!("tegata set {name}")
+            } else {
+                format!("tegata rotate {name}")
+            };
+            let message = match standing {
+                Standing::Ok => format!(
+                    "{name}: generation {generation} is {}",
+                    age.describe(self.now)
+                ),
+                Standing::Due => format!(
+                    "{name}: generation {generation} is {}; due soon: {command}",
+                    age.describe(self.now)
+                ),
+                Standing::RotateNow => format!(
+                    "{name}: generation {generation} is {}; rotate it now: {command}",
+                    age.describe(self.now)
+                ),
+                Standing::Expired => format!(
+                    "{name}: generation {generation} is {}; it no longer works: {command}",
+                    age.describe(self.now)
+                ),
+            };
+            out.push(Stale {
+                environment: self.loaded.config.environment.clone(),
+                resource: name.clone(),
+                provider: res.provider.clone(),
+                generation,
+                created: age.created,
+                age_seconds: (self.now - age.created).num_seconds(),
+                max_age: age.max_age.map(|m| m.to_string()),
+                expires: age.expires,
+                standing,
+                command,
+                message,
+            });
+        }
+        Ok(out)
+    }
+
     /// リソースと秘密ごとの状態
     pub async fn status(&self) -> anyhow::Result<()> {
         let readers = self.loaded.readers()?;
@@ -1125,7 +1286,16 @@ impl<'a> Engine<'a> {
                 Some(n) => format!("generation {n}"),
                 None => "-".to_owned(),
             };
-            println!("{name} ({kind}) {gen}");
+            let age = match self.age(res, &gens).await? {
+                Some((_, age)) => format!(
+                    ", {}{}",
+                    age.describe(self.now),
+                    age.standing(self.now, self.loaded.config.defaults.warn_before)
+                        .mark()
+                ),
+                None => String::new(),
+            };
+            println!("{name} ({kind}) {gen}{age}");
             for secret in res.all_secrets() {
                 let v = latest_enabled(self.store, &secret).await?;
                 let who: Vec<String> = readers

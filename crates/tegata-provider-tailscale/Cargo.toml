@@ -10,6 +10,7 @@ publish = false
 [dependencies]
 anyhow = "1"
 async-trait = "0.1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 tegata-plugin = { path = "../tegata-plugin" }
 reqwest = { version = "0.13", default-features = false, features = ["stream", "json", "form", "rustls-no-provider"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }

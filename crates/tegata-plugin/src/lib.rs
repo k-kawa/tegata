@@ -26,6 +26,7 @@
 //!         Ok(Created {
 //!             outputs: BTreeMap::from([("value".to_owned(), format!("token for {name}"))]),
 //!             state: serde_json::json!({ "id": "token-1" }),
+//!             expires: None,
 //!         })
 //!     }
 //!
@@ -124,6 +125,11 @@ pub struct Response {
     /// plain text, so never put secret values here
     #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
     pub state: serde_json::Value,
+    /// `create`: when the new value stops working on the provider's side, if it does (RFC 3339,
+    /// for example `2026-10-25T09:30:00Z`). tegata records it with the generation, and
+    /// `tegata status` and `tegata check --stale` show it
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires: Option<String>,
     /// Why the operation failed (shown to the user; never include secret values)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
@@ -134,6 +140,8 @@ pub struct Response {
 pub struct Created {
     pub outputs: BTreeMap<String, String>,
     pub state: serde_json::Value,
+    /// When the value stops working on the provider's side, if it does (RFC 3339, [`Response::expires`])
+    pub expires: Option<String>,
 }
 
 impl Request {
@@ -222,6 +230,7 @@ pub fn run<P: Provider>(provider: P) -> ! {
             Op::Create => provider.create(&req).await.map(|c| Response {
                 outputs: c.outputs,
                 state: c.state,
+                expires: c.expires,
                 ..Default::default()
             }),
             Op::Delete => provider.delete(&req).await.map(|()| Response::default()),

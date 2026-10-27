@@ -61,6 +61,7 @@ resources:
 | --- | --- |
 | `name` | The token's name. The creation time is added (`releases read (2026-10-18 09:30 UTC)`), so the old and the new token can be told apart during a rotation |
 | `policies` | A list of policies. Each has `permissions` (names of permission groups as the dashboard shows them; `"A\|B"` tries `A`, then `B`, for groups that were renamed) and at least one of `account: true` (the whole account), `r2_buckets` (bucket names), and `zones` (zone names) |
+| `expiry_seconds` | Optional. The token stops working this many seconds after it is created (Cloudflare's `expires_on`). tegata records when, so `tegata status` and `tegata check --stale` show it. Default: the token does not expire |
 
 | Output | Description |
 | --- | --- |
@@ -69,6 +70,8 @@ resources:
 | `r2_secret_access_key` | The SHA-256 of the token, which is the secret access key for R2's S3 API |
 
 `prune` deletes the older tokens (a token that no longer exists counts as deleted).
+
+If the token expires, set the resource's [`max_age`](configuration.md#resources) shorter than `expiry_seconds`, so that `tegata check --stale` asks for a rotation before the token stops working.
 
 ### `tunnel_token` (managed, replaced at once)
 
@@ -165,7 +168,7 @@ resources:
 | `reusable` | Default `false` |
 | `ephemeral` | Default `false` |
 | `preauthorized` | Default `true` |
-| `expiry_seconds` | Default 604800 (7 days) |
+| `expiry_seconds` | Default 604800 (7 days). The key cannot add devices after that |
 | `description` | Default: the resource's name |
 
 | Output | Description |
@@ -173,6 +176,16 @@ resources:
 | `key` | The auth key |
 
 `prune` deletes the older keys (keys that were used up or expired count as deleted).
+
+**Auth keys expire.** By default a key stops working 7 days after it is made, and the value in the store looks unchanged: servers already in the tailnet keep working, but new servers can no longer join. tegata records when each key expires; `tegata status` shows `expires in 4 days`, and `tegata check --stale` fails once the key has expired. For a reusable key that new servers use to join, set a longer `expiry_seconds` and a resource [`max_age`](configuration.md#resources) well inside it, and run `tegata check --stale` on a schedule ([Rotating on a schedule](../guides/rotating-secrets.md#rotating-on-a-schedule)):
+
+```yaml
+  join_key:
+    provider: tailscale
+    type: auth_key
+    config: { tags: [tag:server], reusable: true, expiry_seconds: 7776000 }   # 90 days
+    max_age: 60d
+```
 
 ## aws
 

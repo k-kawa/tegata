@@ -57,11 +57,12 @@ Creates a new value. Called by `apply` for resources that have no value yet, and
 Response:
 
 ```json
-{ "outputs": { "id": "…", "value": "…" }, "state": { "token_id": "…" } }
+{ "outputs": { "id": "…", "value": "…" }, "state": { "token_id": "…" }, "expires": "2026-10-25T09:30:00Z" }
 ```
 
 - `outputs`: output name → value. The resource's `secrets` map secret names to these output names
 - `state`: anything the provider needs later to delete this value (an ID, a creation time). **Never put secret values here**: tegata stores `state` in plain text in the secret's annotations
+- `expires` (optional): when the new value stops working on the service's side, in RFC 3339. tegata records it with the generation; `tegata status` shows it, and `tegata check --stale` fails once it has passed. Leave it out for values that do not expire. In Rust, set `Created::expires`
 
 ### `read` (data types)
 

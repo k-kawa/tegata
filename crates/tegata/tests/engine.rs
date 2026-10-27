@@ -8,7 +8,7 @@ use tegata::engine::{generations, Engine};
 use tegata::store::local::LocalStore;
 use tegata::store::{latest_enabled, Store};
 
-/// 偽のプロバイダー：thing（managed）は作るたびに id-N、s-N を返し、消した state を deleted に、消す要求を last-delete に書く。
+/// 偽のプロバイダー：thing（managed）は作るたびに id-N、s-N を返し（expires のファイルがあれば、その時刻を expires で返す）、消した state を deleted に、消す要求を last-delete に書く。
 /// info（data）は data.json を返す
 fn fake_provider(dir: &Path) {
     let d = dir.display();
@@ -20,7 +20,8 @@ case "$req" in
   *'"op":"create"'*)
     echo "$req" > "{d}/last-create"
     n=$(( $(cat "{d}/count" 2>/dev/null || echo 0) + 1 )); echo $n > "{d}/count"
-    echo "{{\"outputs\":{{\"id\":\"id-$n\",\"secret\":\"s-$n\"}},\"state\":{{\"id\":\"id-$n\"}}}}" ;;
+    exp=""; if [ -f "{d}/expires" ]; then exp=",\"expires\":\"$(cat "{d}/expires")\""; fi
+    echo "{{\"outputs\":{{\"id\":\"id-$n\",\"secret\":\"s-$n\"}},\"state\":{{\"id\":\"id-$n\"}}$exp}}" ;;
   *'"op":"delete"'*) echo "$req" > "{d}/last-delete"; echo "$req" | sed 's/.*,"state":{{"id":"\([^"]*\)"}}.*/\1/' >> "{d}/deleted"; echo '{{}}' ;;
   *'"op":"read"'*) cat "{d}/data.json" ;;
 esac
@@ -297,4 +298,109 @@ async fn imports_values_from_filled_files() {
     engine.rotate(&["thing".into()]).await.unwrap();
     engine.prune(&["thing".into()]).await.unwrap();
     assert!(!dir.join("deleted").exists());
+}
+
+#[tokio::test]
+async fn measures_the_age_of_generations() {
+    use tegata::age::Standing;
+    std::env::set_var("TEGATA_TEST_FAKE_TOKEN", "tok-123");
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    fake_provider(dir);
+    std::fs::write(dir.join("data.json"), r#"{"outputs":{"BUCKET":"b1"}}"#).unwrap();
+    let now = tegata::age::now();
+    let expires = now + chrono::TimeDelta::days(30);
+    std::fs::write(dir.join("expires"), expires.to_rfc3339()).unwrap();
+    std::fs::write(
+        dir.join("tegata.yaml"),
+        r#"
+stores: { main: { local: { dir: store } } }
+defaults: { max_age: 180d, warn_before: 7d }
+providers:
+  fake:
+    command: ./tegata-provider-fake
+    credentials:
+      token: { env: TEGATA_TEST_FAKE_TOKEN }
+resources:
+  key: { provider: random, stores: { main: [{ name: KEY }] }, max_age: 90d }
+  thing:
+    provider: fake
+    type: thing
+    stores: { main: [{ output: id, name: THING_ID }, { output: secret, name: THING_SECRET }] }
+  info: { provider: fake, type: info, stores: { main: [{ output: BUCKET, name: BUCKET }] }, max_age: 1d }
+"#,
+    )
+    .unwrap();
+    let loaded = Loaded::load(&dir.join("tegata.yaml")).unwrap();
+    let store = LocalStore::new(dir.join("store"));
+    let engine = Engine::new(&loaded, &store);
+    let checked = engine.check(None).await.unwrap();
+    assert_eq!(
+        checked.warnings,
+        vec!["resource info: max_age has no effect, since fake info is read, not made"]
+    );
+    engine.apply().await.unwrap();
+
+    // The generation records when it was made, and the expiry the provider returned
+    let gens = generations(&store.get("THING_ID").await.unwrap().unwrap());
+    let g = &gens[&1];
+    assert!(g.created.is_some_and(|c| c >= now));
+    assert_eq!(g.expires.map(|e| e.timestamp()), Some(expires.timestamp()));
+
+    let (l, st) = (&loaded, &store);
+    let at = move |days: i64| async move {
+        let stale = Engine::new(l, st)
+            .with_now(now + chrono::TimeDelta::days(days))
+            .stale()
+            .await
+            .unwrap();
+        stale
+            .into_iter()
+            .map(|s| (s.resource, s.standing))
+            .collect::<Vec<_>>()
+    };
+    // Data resources never go stale
+    assert_eq!(
+        at(0).await,
+        vec![("key".into(), Standing::Ok), ("thing".into(), Standing::Ok)]
+    );
+    // Expiring within warn_before
+    assert_eq!(
+        at(25).await,
+        vec![
+            ("key".into(), Standing::Ok),
+            ("thing".into(), Standing::Due)
+        ]
+    );
+    assert_eq!(
+        at(85).await,
+        vec![
+            ("key".into(), Standing::Due),
+            ("thing".into(), Standing::Expired)
+        ]
+    );
+    assert_eq!(at(91).await[0], ("key".into(), Standing::RotateNow));
+
+    // A generation recorded without a time is as old as its version
+    let mut meta = store.get("KEY").await.unwrap().unwrap();
+    let mut g: serde_json::Value = serde_json::from_str(&meta.annotations["tegata-gen-1"]).unwrap();
+    g.as_object_mut().unwrap().remove("created");
+    meta.annotations
+        .insert("tegata-gen-1".into(), g.to_string());
+    store.update_meta("KEY", &meta).await.unwrap();
+    let version = store.versions("KEY").await.unwrap()[0].created.unwrap();
+    let stale = engine.stale().await.unwrap();
+    assert_eq!(stale[0].resource, "key");
+    assert_eq!(stale[0].created, version);
+    assert_eq!(stale[0].max_age.as_deref(), Some("90d"));
+    assert_eq!(stale[0].command, "tegata rotate key");
+
+    // A new generation starts again
+    engine.rotate(&["key".into()]).await.unwrap();
+    let stale = engine
+        .with_now(now + chrono::TimeDelta::days(91))
+        .stale()
+        .await
+        .unwrap();
+    assert_eq!(stale[0].generation, 2);
 }
